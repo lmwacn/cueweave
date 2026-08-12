@@ -81,7 +81,7 @@ async function createHarness(context, options = {}) {
       HOST: "127.0.0.1",
       PORT: String(port),
       OWNER_GRACE_MS: String(options.ownerGraceMs ?? 120),
-      EMPTY_ROOM_TTL_MS: String(options.emptyRoomTtlMs ?? 60_000),
+      EMPTY_ROOM_TTL_MS: String(options.emptyRoomTtlMs ?? 0),
       ROOM_DATA_FILE: dataFile
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -268,7 +268,16 @@ test("输入校验、边界钳制、未知消息和超大消息受到保护", as
   assert.equal(await closeCode, 1009);
 });
 
-test("空房间按TTL销毁，服务重启会通知客户端并及时退出", async (context) => {
+test("空房间默认保留，配置TTL后销毁，服务重启会通知客户端并及时退出", async (context) => {
+  const retainedHarness = await createHarness(context);
+  const retainedOwner = await retainedHarness.client();
+  const retainedRoom = await createRoom(retainedOwner);
+  retainedOwner.close();
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  const returning = await retainedHarness.client();
+  returning.send("room.join", { roomId: retainedRoom.roomId, name: "稍后恢复", deviceMode: "control" });
+  assert.equal((await returning.next("room.joined")).payload.state.script, "连接矩阵");
+
   const expiringHarness = await createHarness(context, { emptyRoomTtlMs: 100 });
   const expiringOwner = await expiringHarness.client();
   const expiringRoom = await createRoom(expiringOwner);

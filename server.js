@@ -11,7 +11,8 @@ const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const PORT = Number(process.env.PORT || 17321);
 const HOST = process.env.HOST || "0.0.0.0";
 const OWNER_GRACE_MS = Number(process.env.OWNER_GRACE_MS || 60_000);
-const EMPTY_ROOM_TTL_MS = Number(process.env.EMPTY_ROOM_TTL_MS || 24 * 60 * 60 * 1000);
+// 0 表示永久保留空房间；只有显式配置正数时才会自动过期。
+const EMPTY_ROOM_TTL_MS = Math.max(0, Number(process.env.EMPTY_ROOM_TTL_MS || 0) || 0);
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const DATA_FILE = process.env.ROOM_DATA_FILE || resolve(ROOT, "data/rooms.json");
 const rooms = new Map();
@@ -217,7 +218,7 @@ async function loadRooms() {
     const stored = JSON.parse(await readFile(DATA_FILE, "utf8"));
     const now = Date.now();
     for (const data of stored.rooms || []) {
-      if (now - Number(data.lastActiveAt || data.createdAt) > EMPTY_ROOM_TTL_MS) continue;
+      if (EMPTY_ROOM_TTL_MS > 0 && now - Number(data.lastActiveAt || data.createdAt) > EMPTY_ROOM_TTL_MS) continue;
       const members = new Map((data.members || []).map((member) => [member.deviceId, {
         ...member,
         connected: false,
@@ -239,8 +240,10 @@ async function loadRooms() {
         emptyTimer: null
       };
       rooms.set(room.id, room);
-      const remaining = Math.max(1, EMPTY_ROOM_TTL_MS - (now - room.lastActiveAt));
-      room.emptyTimer = setTimeout(() => { rooms.delete(room.id); schedulePersist(); }, remaining);
+      if (EMPTY_ROOM_TTL_MS > 0) {
+        const remaining = Math.max(1, EMPTY_ROOM_TTL_MS - (now - room.lastActiveAt));
+        room.emptyTimer = setTimeout(() => { rooms.delete(room.id); schedulePersist(); }, remaining);
+      }
     }
   } catch (error) {
     if (error.code !== "ENOENT") console.error("读取房间数据失败：", error.message);
@@ -276,7 +279,9 @@ function scheduleEmptyRoom(room) {
   clearRoomTimers(room);
   if ([...room.members.values()].some((member) => member.connected)) return;
   room.lastActiveAt = Date.now();
-  room.emptyTimer = setTimeout(() => { rooms.delete(room.id); schedulePersist(); }, EMPTY_ROOM_TTL_MS);
+  if (EMPTY_ROOM_TTL_MS > 0) {
+    room.emptyTimer = setTimeout(() => { rooms.delete(room.id); schedulePersist(); }, EMPTY_ROOM_TTL_MS);
+  }
   schedulePersist();
 }
 
