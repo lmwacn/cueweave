@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090b10" />
     <title>CueWeave · 流光提词器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260812-15" />
+    <link rel="stylesheet" href="/styles.css?v=20260812-16" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -199,6 +199,9 @@
                 <span class="choice-icon">→</span><b>加入房间</b><small>输入 6 位房间码加入</small><i>→</i>
               </button>
             </div>
+            <button class="local-only-choice" id="localOnlyChoice" type="button">
+              <span>○</span><b>仅自己使用</b><small>不创建房间，直接使用本机提词器</small><i>→</i>
+            </button>
             <section class="recent-rooms hidden" id="recentRoomsSection" aria-labelledby="recentRoomsTitle">
               <div class="section-heading"><b id="recentRoomsTitle">最近房间</b><span>保存在当前浏览器</span></div>
               <div class="recent-room-list" id="recentRoomList"></div>
@@ -280,7 +283,7 @@
         </div>
       </dialog>
     </div>
-    <script src="/sync-client.js?v=20260812-17"></script>
+    <script src="/sync-client.js?v=20260812-18"></script>
     <script src="/app.js?v=20260812-20"></script>
   </body>
 </html>

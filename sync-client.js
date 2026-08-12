@@ -87,9 +87,10 @@
         $("syncDialog").showModal();
       });
       $("closeSyncButton").addEventListener("click", () => $("syncDialog").close());
-      $("syncDialog").addEventListener("click", (event) => { if (event.target === $("syncDialog")) $("syncDialog").close(); });
+      $("syncDialog").addEventListener("cancel", (event) => event.preventDefault());
       $("createRoomChoice").addEventListener("click", () => this.showSetupStep("create"));
       $("joinRoomChoice").addEventListener("click", () => this.showSetupStep("join"));
+      $("localOnlyChoice").addEventListener("click", () => $("syncDialog").close());
       $("syncSetupBack").addEventListener("click", () => this.showSetupStep("choice"));
       $("createRoomButton").addEventListener("click", () => this.createRoom());
       $("joinRoomButton").addEventListener("click", () => this.joinRoom());

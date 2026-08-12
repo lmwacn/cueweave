@@ -215,9 +215,15 @@ input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; } input[type="co
 .sync-choice-card.primary-choice { border-color: rgba(255,116,82,.3); background: linear-gradient(145deg, rgba(255,116,82,.11), rgba(255,116,82,.025)); }
 .sync-choice-card .choice-icon { grid-row: 1 / 3; width: 42px; height: 42px; display: grid; place-items: center; align-self: center; border: 1px solid rgba(255,255,255,.1); border-radius: 11px; color: #c4c9d2; background: #171b24; font-size: 20px; }
 .sync-choice-card.primary-choice .choice-icon { border-color: transparent; color: #240f09; background: var(--accent); }
-.sync-choice-card b { align-self: end; color: #e3e6eb; font-size: 13px; }
-.sync-choice-card small { align-self: start; margin-top: 5px; color: #737b89; font-size: 9px; line-height: 1.5; }
+.sync-choice-card b { align-self: end; color: #e3e6eb; font-size: 17px; }
+.sync-choice-card small { align-self: start; margin-top: 7px; color: #828a99; font-size: 12px; line-height: 1.5; }
 .sync-choice-card > i { position: absolute; right: 14px; top: 14px; color: #555d6b; font-style: normal; }
+.local-only-choice { position: relative; width: 100%; min-height: 52px; margin-top: 12px; padding: 0 42px 0 15px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 10px; text-align: left; background: rgba(13,16,22,.72); color: #929aa8; cursor: pointer; transition: .18s ease; }
+.local-only-choice:hover { border-color: rgba(255,255,255,.18); color: #d7dbe2; background: #121620; }
+.local-only-choice > span { color: #697180; font-size: 17px; }
+.local-only-choice b { flex: 0 0 auto; color: #cbd0d8; font-size: 13px; white-space: nowrap; }
+.local-only-choice small { min-width: 0; overflow: hidden; color: #707887; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.local-only-choice i { position: absolute; right: 16px; color: #596170; font-style: normal; }
 .sync-step-back { margin: -3px 0 15px; padding: 0; border: 0; color: #838b99; background: none; font-size: 10px; cursor: pointer; }
 .sync-step-back:hover { color: var(--accent-2); }
 .sync-step-heading { margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
