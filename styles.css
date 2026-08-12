@@ -29,7 +29,8 @@ button { color: inherit; }
 .app-shell { width: 100%; max-width: 100%; height: 100vh; min-width: 0; min-height: 620px; overflow: hidden; display: grid; grid-template-rows: 68px auto 1fr; background: radial-gradient(circle at 70% 10%, rgba(255, 109, 73, 0.06), transparent 26%), var(--page); }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--line); background: rgba(9, 11, 16, 0.88); backdrop-filter: blur(20px); z-index: 20; }
 .brand { display: flex; align-items: center; gap: 11px; font-weight: 720; letter-spacing: .04em; }
-.brand small { color: #5f6470; font-size: 9px; letter-spacing: .19em; margin-left: 2px; align-self: flex-end; margin-bottom: 21px; }
+.brand-name { line-height: 1; }
+.brand small { color: #5f6470; font-size: 9px; line-height: 1; letter-spacing: .19em; margin-left: 2px; }
 .brand-mark { width: 29px; height: 29px; border: 1px solid rgba(255, 127, 91, .45); border-radius: 9px; display: flex; align-items: end; justify-content: center; gap: 2px; padding: 7px 6px; background: linear-gradient(145deg, rgba(255, 111, 76, .18), rgba(255, 111, 76, .02)); }
 .brand-mark i { width: 2px; border-radius: 2px; background: var(--accent); }
 .brand-mark i:nth-child(1) { height: 7px; }.brand-mark i:nth-child(2) { height: 14px; }.brand-mark i:nth-child(3) { height: 10px; }
