@@ -1,0 +1,4 @@
+node_modules/
+data/rooms.json
+data/rooms.json.*.tmp
+.DS_Store
