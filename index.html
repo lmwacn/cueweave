@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090b10" />
     <title>CueWeave · 流光提词器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260812-17" />
+    <link rel="stylesheet" href="/styles.css?v=20260813-1" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -16,7 +16,7 @@
           <small>CUEWEAVE</small>
         </div>
         <div class="topbar-actions">
-          <button class="button ghost sync-open-button" id="syncToggle" type="button" aria-haspopup="dialog">
+          <button class="button ghost sync-open-button" id="syncToggle" type="button" aria-haspopup="dialog" aria-label="多端同步">
             <span class="connection-dot" id="connectionDot" aria-hidden="true"></span>
             <span id="connectionLabel">多端同步</span>
           </button>
@@ -34,7 +34,8 @@
       </header>
 
       <section class="settings-dock" id="settingsDock" aria-label="快速设置">
-        <div class="dock-scroll">
+        <div class="dock-scroll" tabindex="0" aria-describedby="dockScrollHint">
+          <span class="sr-only" id="dockScrollHint">设置项目较多时可横向滚动</span>
           <div class="dock-group typography-dock">
             <span class="dock-heading">排版</span>
             <div class="setting-row">
@@ -104,6 +105,7 @@
               <button id="inlineEditButton" type="button"><span>✎</span> 编辑文稿</button>
               <small id="inlineEditHint">双击文字可原位修改</small>
             </div>
+            <div class="connection-banner" id="connectionBanner" role="status" aria-live="polite"></div>
             <div class="prompter-stage" id="prompterStage" tabindex="0" aria-label="提词内容，鼠标滚轮可手动滚动">
               <article class="prompt-content" id="promptContent" aria-label="提词文稿"></article>
               <div class="stage-empty" id="stageEmpty">
@@ -172,8 +174,17 @@
         <textarea id="scriptInput" spellcheck="false" placeholder="在这里粘贴或输入你的提词稿……"></textarea>
         <div class="script-meta">
           <span id="charCount">0 字</span>
-          <div><span>Esc 关闭</span><button class="text-button" id="clearButton" type="button">清空文本</button></div>
+          <div class="script-actions">
+            <label class="sr-only" for="draftHistorySelect">本机稿件备份</label>
+            <select id="draftHistorySelect" title="本机稿件备份"><option value="">本机备份</option></select>
+            <button class="text-button" id="restoreDraftButton" type="button" disabled>恢复</button>
+            <button class="text-button" id="importScriptButton" type="button">导入</button>
+            <button class="text-button" id="exportScriptButton" type="button">导出</button>
+            <span>Esc 关闭</span>
+            <button class="text-button" id="clearButton" type="button">清空文本</button>
+          </div>
         </div>
+        <input class="sr-only" id="scriptFileInput" type="file" accept=".txt,text/plain" />
       </dialog>
 
       <dialog class="sync-dialog" id="syncDialog" aria-labelledby="syncDialogTitle">
@@ -283,7 +294,7 @@
         </div>
       </dialog>
     </div>
-    <script src="/sync-client.js?v=20260812-18"></script>
-    <script src="/app.js?v=20260812-20"></script>
+    <script src="/sync-client.js?v=20260813-1"></script>
+    <script src="/app.js?v=20260813-1"></script>
   </body>
 </html>

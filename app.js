@@ -1,10 +1,10 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "cueweave-teleprompter-v1";
-  const LOCAL_VIEW_KEY = "cueweave-local-view-v1";
-  const LEGACY_STORAGE_KEY = "liuguang-teleprompter-v1";
-  const LEGACY_LOCAL_VIEW_KEY = "liuguang-local-view-v1";
+  const STORAGE_KEY = "cueweave-teleprompter-v3";
+  const LOCAL_VIEW_KEY = "cueweave-local-view-v3";
+  const DRAFT_HISTORY_KEY = "cueweave-draft-history-v3";
+  const MAX_DRAFT_HISTORY = 10;
   const DEFAULT_SCRIPT = `大家好，欢迎使用 CueWeave 多端同步提词器。
 
 它可以让电脑、手机和平板加入同一个房间，实时同步文稿、排版、滚动速度和播放进度。
@@ -68,15 +68,17 @@
   let lastManualProgressBroadcast = 0;
   let remoteManualTarget = null;
   let lastRemoteScrollWriteAt = 0;
+  let draftBackupTimer = null;
+  let draftHistory = loadDraftHistory();
+  let wakeLock = null;
   const sync = window.teleprompterSync;
   const sharedStateKeys = Object.keys(defaults).filter((key) => key !== "focusMode");
   const REFERENCE_STAGE_WIDTH = 1000;
 
   function loadState() {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY) || "{}";
+      const stored = localStorage.getItem(STORAGE_KEY) || "{}";
       const loaded = { ...defaults, ...JSON.parse(stored), focusMode: false };
-      if (!localStorage.getItem(STORAGE_KEY) && stored !== "{}") localStorage.setItem(STORAGE_KEY, stored);
       delete loaded.innerPadding;
       delete loaded.outerMargin;
       delete loaded.editorCollapsed;
@@ -92,7 +94,7 @@
         followRoomMirror: true,
         mirrorHorizontal: false,
         mirrorVertical: false,
-        ...JSON.parse(localStorage.getItem(LOCAL_VIEW_KEY) || localStorage.getItem(LEGACY_LOCAL_VIEW_KEY) || "{}")
+        ...JSON.parse(localStorage.getItem(LOCAL_VIEW_KEY) || "{}")
       };
     } catch {
       return { followRoomMirror: true, mirrorHorizontal: false, mirrorVertical: false };
@@ -100,7 +102,40 @@
   }
 
   function saveLocalView() {
-    localStorage.setItem(LOCAL_VIEW_KEY, JSON.stringify(localView));
+    try { localStorage.setItem(LOCAL_VIEW_KEY, JSON.stringify(localView)); } catch {}
+  }
+
+  function loadDraftHistory() {
+    try {
+      const stored = JSON.parse(localStorage.getItem(DRAFT_HISTORY_KEY) || "[]");
+      return Array.isArray(stored) ? stored.filter((item) => item?.id && typeof item.script === "string").slice(0, MAX_DRAFT_HISTORY) : [];
+    } catch { return []; }
+  }
+
+  function renderDraftHistory() {
+    const select = $("draftHistorySelect");
+    const selected = select.value;
+    select.replaceChildren(new Option("本机备份", ""));
+    draftHistory.forEach((draft) => {
+      const time = new Date(draft.savedAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      select.add(new Option(`${draft.reason} · ${time}`, draft.id));
+    });
+    select.value = draftHistory.some((draft) => draft.id === selected) ? selected : "";
+    $("restoreDraftButton").disabled = !select.value || !hasPermission("editScript");
+  }
+
+  function backupDraft(reason, script = state.script) {
+    const content = String(script || "").slice(0, 100_000);
+    if (!content.trim() || draftHistory[0]?.script === content) return;
+    draftHistory.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, savedAt: Date.now(), reason, script: content });
+    draftHistory = draftHistory.slice(0, MAX_DRAFT_HISTORY);
+    try { localStorage.setItem(DRAFT_HISTORY_KEY, JSON.stringify(draftHistory)); } catch { draftHistory = draftHistory.slice(0, 5); }
+    renderDraftHistory();
+  }
+
+  function scheduleDraftBackup() {
+    window.clearTimeout(draftBackupTimer);
+    draftBackupTimer = window.setTimeout(() => backupDraft("自动备份"), 30_000);
   }
 
   function saveState(changedKeys = sharedStateKeys) {
@@ -108,9 +143,10 @@
     elements.saveState.innerHTML = "<i></i> 正在保存";
     saveTimer = window.setTimeout(() => {
       const persistentState = { ...state, focusMode: false };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState));
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState)); } catch {}
       elements.saveState.innerHTML = "<i></i> 已自动保存";
     }, 280);
+    if (changedKeys.includes("script")) scheduleDraftBackup();
     if (!applyingRemoteState && sync) {
       const patch = {};
       changedKeys.forEach((key) => { if (sharedStateKeys.includes(key)) patch[key] = state[key]; });
@@ -356,6 +392,22 @@
     remotePlaybackAnchor = null;
     remoteManualTarget = null;
     preciseScrollTop = null;
+    updateWakeLock();
+  }
+
+  async function updateWakeLock() {
+    const shouldLock = (isPlaying || Boolean(document.fullscreenElement)) && !document.hidden;
+    if (!shouldLock && wakeLock) {
+      const current = wakeLock;
+      wakeLock = null;
+      try { await current.release(); } catch {}
+      return;
+    }
+    if (!shouldLock || wakeLock || !navigator.wakeLock?.request) return;
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } catch {}
   }
 
   function tick(timestamp) {
@@ -493,6 +545,7 @@
     elements.playButton.setAttribute("aria-label", "暂停自动滚动");
     elements.playTitle.textContent = "正在滚动";
     animationFrame = requestAnimationFrame(tick);
+    updateWakeLock();
     sync?.sendPlayback("play", getPlaybackSnapshot());
   }
 
@@ -700,6 +753,41 @@
       elements.editorDialog.showModal();
       requestAnimationFrame(() => elements.scriptInput.focus({ preventScroll: true }));
     });
+    $("draftHistorySelect").addEventListener("change", (event) => {
+      $("restoreDraftButton").disabled = !event.target.value || !hasPermission("editScript");
+    });
+    $("restoreDraftButton").addEventListener("click", () => {
+      const draft = draftHistory.find((item) => item.id === $("draftHistorySelect").value);
+      if (!draft || !hasPermission("editScript")) return;
+      if (!window.confirm("用选中的本机备份替换当前文稿吗？")) return;
+      backupDraft("恢复前备份");
+      state.script = draft.script;
+      applyState();
+      saveState(["script"]);
+    });
+    $("exportScriptButton").addEventListener("click", () => {
+      const blob = new Blob([state.script], { type: "text/plain;charset=utf-8" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `CueWeave-文稿-${new Date().toISOString().slice(0, 10)}.txt`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1_000);
+    });
+    $("importScriptButton").addEventListener("click", () => {
+      if (hasPermission("editScript")) $("scriptFileInput").click();
+    });
+    $("scriptFileInput").addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file || !hasPermission("editScript")) return;
+      try {
+        const imported = (await file.text()).slice(0, 100_000);
+        backupDraft("导入前备份");
+        state.script = imported;
+        applyState();
+        saveState(["script"]);
+      } catch { window.alert("文稿导入失败，请确认文件为普通文本格式。"); }
+    });
     elements.closeEditorButton.addEventListener("click", () => elements.editorDialog.close());
     elements.editorDialog.addEventListener("click", (event) => {
       if (event.target === elements.editorDialog) elements.editorDialog.close();
@@ -777,12 +865,14 @@
     $("clearButton").addEventListener("click", () => {
       if (isInlineEditing) exitInlineEdit();
       if (!state.script || window.confirm("确定清空当前提词稿吗？")) {
+        backupDraft("清空前备份");
         state.script = ""; applyState(); saveState(["script"]); elements.scriptInput.focus();
       }
     });
     $("resetButton").addEventListener("click", () => {
       if (isInlineEditing) exitInlineEdit();
       if (window.confirm("恢复默认文字和全部设置吗？")) {
+        backupDraft("重置前备份");
         stopPlayback(); state = { ...defaults }; elements.stage.scrollTop = 0; applyState(); saveState(sharedStateKeys);
       }
     });
@@ -794,6 +884,7 @@
     });
     document.addEventListener("fullscreenchange", () => {
       $("fullscreenButton").innerHTML = document.fullscreenElement ? "<span aria-hidden=\"true\">⛶</span> 退出全屏" : "<span aria-hidden=\"true\">⛶</span> 全屏提词";
+      updateWakeLock();
     });
     document.addEventListener("keydown", (event) => {
       const interacting = event.target.matches("textarea, input, button, dialog") || (isInlineEditing && elements.promptContent.contains(event.target));
@@ -811,7 +902,7 @@
         const shouldBroadcast = ownsPlaybackClock;
         stopPlayback();
         if (shouldBroadcast) sync?.sendPlayback("pause", getPlaybackSnapshot());
-      }
+      } else updateWakeLock();
     });
     elements.stage.addEventListener("wheel", () => {
       beginManualScroll();
@@ -842,6 +933,7 @@
 
   bindEvents();
   applyState();
+  renderDraftHistory();
   if (window.ResizeObserver) {
     let previousStageWidth = elements.stage.clientWidth;
     let previousLineHeight = getLayoutMetrics().lineHeight;
@@ -869,8 +961,12 @@
       state = { ...state, ...event.detail.patch, focusMode: state.focusMode };
       applyState();
       const persistentState = { ...state, focusMode: false };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState));
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState)); } catch {}
       applyingRemoteState = false;
+    });
+    sync.addEventListener("state-conflict", (event) => {
+      backupDraft("同步冲突", state.script);
+      if (event.detail?.script && event.detail.script !== state.script) backupDraft("同步冲突", event.detail.script);
     });
     sync.addEventListener("remote-playback", (event) => applyRemotePlayback(event.detail));
     sync.addEventListener("display-mode", () => {

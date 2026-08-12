@@ -1,12 +1,13 @@
 (() => {
   "use strict";
 
-  const SESSION_KEY = "cueweave-sync-session-v1";
-  const RECENT_ROOMS_KEY = "cueweave-recent-rooms-v1";
-  const NAME_KEY = "cueweave-device-name-v1";
-  const LEGACY_SESSION_KEY = "liuguang-sync-session-v1";
-  const LEGACY_NAME_KEY = "liuguang-device-name-v1";
+  const SESSION_KEY = "cueweave-sync-session-v3";
+  const RECENT_ROOMS_KEY = "cueweave-recent-rooms-v3";
+  const NAME_KEY = "cueweave-device-name-v3";
   const $ = (id) => document.getElementById(id);
+  const storageGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
+  const storageSet = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
+  const storageRemove = (key) => { try { localStorage.removeItem(key); } catch {} };
   const roleLabels = { owner: "房主", editor: "编辑者", operator: "操作者", viewer: "查看者" };
   const modeLabels = { control: "控制端", editor: "编辑端", director: "导播端", display: "显示端" };
 
@@ -19,8 +20,10 @@
       this.session = null;
       this.room = null;
       this.permissions = null;
+      this.scriptRevision = null;
       this.pendingMessages = [];
       this.pendingPatch = {};
+      this.pendingPatchBaseScriptRevision = null;
       this.patchTimer = null;
       this.reconnectTimer = null;
       this.reconnectDelay = 1000;
@@ -38,8 +41,7 @@
 
     loadSession() {
       try {
-        const stored = localStorage.getItem(SESSION_KEY) || localStorage.getItem(LEGACY_SESSION_KEY) || "null";
-        if (!localStorage.getItem(SESSION_KEY) && stored !== "null") localStorage.setItem(SESSION_KEY, stored);
+        const stored = storageGet(SESSION_KEY) || "null";
         return JSON.parse(stored);
       }
       catch { return null; }
@@ -48,7 +50,7 @@
     loadRecentRooms(previousSession) {
       let rooms = [];
       try {
-        const stored = JSON.parse(localStorage.getItem(RECENT_ROOMS_KEY) || "[]");
+        const stored = JSON.parse(storageGet(RECENT_ROOMS_KEY) || "[]");
         if (Array.isArray(stored)) rooms = stored;
       } catch {}
       if (previousSession?.roomId && !rooms.some((room) => room.roomId === previousSession.roomId)) {
@@ -61,7 +63,7 @@
     }
 
     saveRecentRooms() {
-      localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(this.recentRooms));
+      storageSet(RECENT_ROOMS_KEY, JSON.stringify(this.recentRooms));
     }
 
     recentRoom(roomId) {
@@ -71,16 +73,14 @@
     persistSession(data) {
       this.session = { ...data, lastVisitedAt: Date.now() };
       this.recentRooms = [this.session, ...this.recentRooms.filter((room) => room.roomId !== data.roomId)].slice(0, 20);
-      localStorage.setItem(SESSION_KEY, JSON.stringify(this.session));
+      storageSet(SESSION_KEY, JSON.stringify(this.session));
       this.saveRecentRooms();
-      localStorage.setItem(NAME_KEY, data.name);
-      localStorage.removeItem(LEGACY_SESSION_KEY);
-      localStorage.removeItem(LEGACY_NAME_KEY);
+      storageSet(NAME_KEY, data.name);
       this.renderRecentRooms();
     }
 
     bindUI() {
-      const defaultName = localStorage.getItem(NAME_KEY) || localStorage.getItem(LEGACY_NAME_KEY) || this.defaultDeviceName();
+      const defaultName = storageGet(NAME_KEY) || this.defaultDeviceName();
       $("deviceNameInput").value = defaultName;
       $("syncToggle").addEventListener("click", () => {
         if (!this.room) this.showSetupStep("choice");
@@ -202,6 +202,7 @@
       if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(encoded);
       else {
         this.pendingMessages.push(encoded);
+        if (this.pendingMessages.length > 100) this.pendingMessages.splice(0, this.pendingMessages.length - 100);
         this.connect(Boolean(this.session?.roomId));
       }
     }
@@ -250,7 +251,7 @@
       this.saveRecentRooms();
       if (this.session?.roomId === roomId && !this.room) {
         this.session = null;
-        localStorage.removeItem(SESSION_KEY);
+        storageRemove(SESSION_KEY);
       }
       this.renderRecentRooms();
     }
@@ -315,6 +316,8 @@
       }
       if (message.type === "room.snapshot") return this.applySnapshot(payload);
       if (message.type === "state.patch") {
+        this.scriptRevision = Number(message.payload?.scriptRevision) || this.scriptRevision;
+        if (payload.sourceDeviceId === this.session?.deviceId) return;
         this.dispatchEvent(new CustomEvent("remote-state", { detail: payload }));
         return;
       }
@@ -325,6 +328,9 @@
       if (message.type === "members.updated") {
         this.room = { ...this.room, ...payload };
         this.permissions = payload.permissions;
+        if (this.session && payload.self) {
+          this.persistSession({ ...this.session, role: payload.self.role, deviceMode: payload.self.deviceMode, roomMode: payload.mode });
+        }
         this.applyPermissions();
         this.renderRoom();
         return;
@@ -339,7 +345,13 @@
         this.setupMessage(payload.message || "房间已关闭", true);
         return;
       }
+      if (message.type === "room.left") return;
       if (message.type === "error") {
+        if (payload.code === "STATE_CONFLICT" && payload.rejectedPatch) {
+          this.dispatchEvent(new CustomEvent("state-conflict", { detail: payload.rejectedPatch }));
+          this.pendingPatch = {};
+          this.pendingPatchBaseScriptRevision = null;
+        }
         if (payload.snapshot) this.applySnapshot(payload.snapshot);
         if (payload.code === "ROOM_NOT_FOUND") {
           const missingRoomId = this.session?.roomId || this.inviteRoomId;
@@ -356,6 +368,7 @@
     applySnapshot(payload) {
       this.room = payload;
       this.permissions = payload.permissions;
+      this.scriptRevision = Number(payload.scriptRevision) || 1;
       this.dispatchEvent(new CustomEvent("remote-state", { detail: { patch: payload.state, replace: true } }));
       this.dispatchEvent(new CustomEvent("remote-playback", { detail: payload.playback }));
       this.applyPermissions();
@@ -364,6 +377,7 @@
       $("syncRoom").classList.remove("hidden");
       this.updateConnection("connected");
       this.updateInviteUI();
+      this.flushStatePatch();
     }
 
     applyPermissions() {
@@ -376,6 +390,9 @@
       }
       const setDisabled = (ids, disabled) => ids.forEach((id) => { const element = $(id); if (element) element.disabled = disabled; });
       setDisabled(["editorToggle", "inlineEditButton", "clearButton"], !this.permissions.editScript);
+      setDisabled(["importScriptButton"], !this.permissions.editScript);
+      $("draftHistorySelect").disabled = !this.permissions.editScript;
+      $("restoreDraftButton").disabled = !this.permissions.editScript || !$("draftHistorySelect").value;
       setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "resetButton"], !this.permissions.editAppearance);
       setDisabled(["playButton", "speedDown", "speedUp", "scrollSpeed"], !this.permissions.controlPlayback);
       setDisabled(["backToTopButton"], !this.permissions.controlProgress);
@@ -432,6 +449,16 @@
           if (window.confirm(`将房主身份移交给“${member.name}”吗？`)) this.send("owner.transfer", { deviceId: member.deviceId });
         });
         controls.append(role, device, transfer);
+        if (!member.connected) {
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.textContent = "移除";
+          remove.setAttribute("aria-label", `移除离线设备 ${member.name}`);
+          remove.addEventListener("click", () => {
+            if (window.confirm(`从房间记录中移除“${member.name}”吗？`)) this.send("member.remove", { deviceId: member.deviceId });
+          });
+          controls.append(remove);
+        }
         row.append(controls);
       }
       return row;
@@ -439,13 +466,28 @@
 
     sendStatePatch(patch) {
       if (!this.room || !patch || !Object.keys(patch).length) return;
+      if ("script" in patch && this.pendingPatchBaseScriptRevision === null) this.pendingPatchBaseScriptRevision = this.scriptRevision;
       this.pendingPatch = { ...this.pendingPatch, ...patch };
       clearTimeout(this.patchTimer);
       this.patchTimer = setTimeout(() => {
-        const next = this.pendingPatch;
-        this.pendingPatch = {};
-        this.send("state.patch", { patch: next });
+        this.flushStatePatch();
       }, "script" in patch ? 220 : 60);
+    }
+
+    flushStatePatch() {
+      clearTimeout(this.patchTimer);
+      this.patchTimer = null;
+      if (!Object.keys(this.pendingPatch).length) return;
+      if (!this.room || this.ws?.readyState !== WebSocket.OPEN) {
+        this.connect(Boolean(this.session?.roomId));
+        return;
+      }
+      const next = this.pendingPatch;
+      const baseScriptRevision = this.pendingPatchBaseScriptRevision;
+      this.pendingPatch = {};
+      this.pendingPatchBaseScriptRevision = null;
+      this.ws.send(JSON.stringify({ type: "state.patch", payload: { patch: next, baseScriptRevision }, sentAt: Date.now() }));
+      if ("script" in next && Number.isFinite(baseScriptRevision)) this.scriptRevision = baseScriptRevision + 1;
     }
 
     sendPlayback(action, playback = this.playbackProvider()) {
@@ -459,6 +501,18 @@
       $("connectionDot").dataset.status = status;
       $("roomConnectionDot").dataset.status = status;
       $("roomConnectionText").textContent = status === "connected" ? "同步正常" : status === "connecting" ? "正在重连" : "已离线";
+      const accessibleLabels = { offline: "未连接", connecting: "连接中", connected: "同步正常", error: "连接异常" };
+      $("syncToggle").setAttribute("aria-label", `多端同步：${accessibleLabels[status]}`);
+      const banner = $("connectionBanner");
+      if (banner) {
+        const visible = Boolean(this.room) && status !== "connected";
+        banner.classList.toggle("visible", visible);
+        banner.classList.toggle("error", status === "error");
+        banner.textContent = visible
+          ? status === "connecting" ? "同步连接中断，正在自动重连…" : status === "error" ? "同步连接异常，正在重试…" : "同步已离线，恢复连接后会自动同步。"
+          : "";
+      }
+      this.dispatchEvent(new CustomEvent("connection-status", { detail: { status } }));
     }
 
     handleClose(event) {
@@ -467,6 +521,13 @@
         clearTimeout(this.reconnectTimer);
         this.manualDisconnect = true;
         this.roomMessage("同一设备已在其他页面连接，本页面已停止自动重连。", true);
+        return;
+      }
+      if (event?.code === 4002) {
+        clearTimeout(this.reconnectTimer);
+        this.manualDisconnect = true;
+        this.clearLocalSession(true);
+        this.setupMessage("当前设备已被房主移出房间。", true);
         return;
       }
       if (this.manualDisconnect || !this.session?.roomId) return;
@@ -532,16 +593,19 @@
 
     leaveRoom() {
       this.manualDisconnect = true;
+      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "room.leave", payload: {} }));
       this.ws?.close(1000, "主动退出");
       this.clearLocalSession(true);
     }
 
     clearLocalSession(showSetup) {
-      localStorage.removeItem(SESSION_KEY);
-      localStorage.removeItem(LEGACY_SESSION_KEY);
+      storageRemove(SESSION_KEY);
       this.session = null;
       this.room = null;
       this.permissions = null;
+      this.scriptRevision = null;
+      this.pendingPatch = {};
+      this.pendingPatchBaseScriptRevision = null;
       this.inviteRoomId = null;
       this.autoJoinRequested = false;
       this.setEntryUrl();

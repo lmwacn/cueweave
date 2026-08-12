@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import { readdir, writeFile } from "node:fs/promises";
 import { WebSocket } from "ws";
 
 async function freePort() {
@@ -74,6 +75,7 @@ class Client {
 async function createHarness(context, options = {}) {
   const port = await freePort();
   const dataFile = `/tmp/cueweave-matrix-${process.pid}-${port}.json`;
+  if (options.initialData) await writeFile(dataFile, JSON.stringify(options.initialData), "utf8");
   const child = spawn(process.execPath, ["server.js"], {
     cwd: process.cwd(),
     env: {
@@ -82,6 +84,8 @@ async function createHarness(context, options = {}) {
       PORT: String(port),
       OWNER_GRACE_MS: String(options.ownerGraceMs ?? 120),
       EMPTY_ROOM_TTL_MS: String(options.emptyRoomTtlMs ?? 0),
+      PERSIST_INTERVAL_MS: String(options.persistIntervalMs ?? 5_000),
+      MAX_MEMBERS_PER_ROOM: String(options.maxMembersPerRoom ?? 50),
       ROOM_DATA_FILE: dataFile
     },
     stdio: ["ignore", "pipe", "pipe"]
@@ -94,6 +98,7 @@ async function createHarness(context, options = {}) {
   await waitForServer(port);
   return {
     port,
+    dataFile,
     child,
     async client() {
       const client = new Client(`ws://127.0.0.1:${port}/ws`);
@@ -163,7 +168,7 @@ test("三种房间模式与四种设备用途执行正确权限矩阵", async (c
   const directorEditor = await editor.next("members.updated", (message) => message.payload.mode === "director");
   assert.equal(directorEditor.payload.permissions.editScript, true);
   assert.equal(directorEditor.payload.permissions.editAppearance, false);
-  editor.send("state.patch", { patch: { script: "允许的改稿", fontSize: 80 } });
+  editor.send("state.patch", { patch: { script: "允许的改稿", fontSize: 80 }, baseScriptRevision: editorJoin.scriptRevision });
   assert.equal((await editor.next("error")).payload.code, "FORBIDDEN");
 });
 
@@ -241,6 +246,7 @@ test("输入校验、边界钳制、未知消息和超大消息受到保护", as
   const room = await createRoom(owner, "open");
 
   owner.send("state.patch", {
+    baseScriptRevision: room.scriptRevision,
     patch: {
       script: "边界更新",
       fontSize: 999,
@@ -258,6 +264,9 @@ test("输入校验、边界钳制、未知消息和超大消息受到保护", as
   assert.equal(snapshot.state.scrollSpeed, 5);
   assert.equal(snapshot.state.backgroundColor, undefined);
   assert.equal(snapshot.state.unexpected, undefined);
+
+  owner.send("state.patch", { patch: { script: "缺少版本号" } });
+  assert.equal((await owner.next("error")).payload.code, "STATE_CONFLICT");
 
   owner.send("unknown.event", {});
   assert.equal((await owner.next("error")).payload.code, "UNKNOWN_MESSAGE");
@@ -317,4 +326,39 @@ test("同一设备的新连接会接管身份并以明确关闭码停止旧连�
   assert.equal(await oldConnectionClosed, 4001);
   replacement.send("room.resync");
   assert.equal((await replacement.next("room.snapshot")).payload.self.role, "owner");
+});
+
+test("文稿版本冲突、延迟持久化与离线设备移除均可控", async (context) => {
+  const harness = await createHarness(context, { persistIntervalMs: 5_000 });
+  const owner = await harness.client();
+  const room = await createRoom(owner, "open");
+  const editor = await harness.client();
+  const joined = await join(editor, room.roomId, "editor", "协作编辑器");
+
+  owner.send("state.patch", { patch: { script: "房主新版" }, baseScriptRevision: room.scriptRevision });
+  const updated = await editor.next("state.patch", (message) => message.payload.patch.script === "房主新版");
+  assert.equal(updated.payload.scriptRevision, room.scriptRevision + 1);
+
+  editor.send("state.patch", { patch: { script: "过期覆盖" }, baseScriptRevision: joined.scriptRevision });
+  const conflict = await editor.next("error", (message) => message.payload.code === "STATE_CONFLICT");
+  assert.equal(conflict.payload.snapshot.state.script, "房主新版");
+  assert.equal(conflict.payload.rejectedPatch.script, "过期覆盖");
+
+  const dirtyHealth = await (await fetch(`http://127.0.0.1:${harness.port}/health`)).json();
+  assert.equal(dirtyHealth.persistDirty, true, "普通编辑应等待持久化周期，而非立即落盘");
+
+  editor.close();
+  await owner.next("members.updated", (message) => message.payload.members.some((member) => member.deviceId === joined.self.deviceId && !member.connected));
+  owner.send("member.remove", { deviceId: joined.self.deviceId });
+  const removed = await owner.next("members.updated", (message) => !message.payload.members.some((member) => member.deviceId === joined.self.deviceId));
+  assert.equal(removed.payload.members.length, 1);
+});
+
+test("旧版房间快照会安全归档并以空的 v3 数据启动", async (context) => {
+  const harness = await createHarness(context, { initialData: { version: 1, rooms: [{ id: "ABCDEF" }] } });
+  const health = await (await fetch(`http://127.0.0.1:${harness.port}/health`)).json();
+  assert.equal(health.rooms, 0);
+  const archivedPrefix = `${harness.dataFile.split("/").at(-1)}.legacy-`;
+  const archivedFiles = (await readdir("/tmp")).filter((name) => name.startsWith(archivedPrefix) && name.endsWith(".bak"));
+  assert.equal(archivedFiles.length, 1);
 });

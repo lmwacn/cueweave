@@ -92,9 +92,15 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   const roomRoute = await fetch(`http://127.0.0.1:${port}/room/ABCDEF`);
   assert.equal(roomRoute.status, 200);
   assert.match(roomRoute.headers.get("content-type"), /text\/html/);
+  assert.match(roomRoute.headers.get("content-security-policy"), /default-src 'self'/);
+  assert.equal(roomRoute.headers.get("referrer-policy"), "no-referrer");
   assert.equal((await fetch(`http://127.0.0.1:${port}/room/INVALID`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/server.js`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/data/rooms.json`)).status, 404);
+
+  const rejectedOrigin = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: "https://malicious.example" });
+  const rejectedStatus = await new Promise((resolve) => rejectedOrigin.once("unexpected-response", (_request, response) => resolve(response.statusCode)));
+  assert.equal(rejectedStatus, 403);
 
   const owner = new TestClient(`ws://127.0.0.1:${port}/ws`);
   const guest = new TestClient(`ws://127.0.0.1:${port}/ws`);
@@ -117,7 +123,7 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   assert.equal(joined.payload.self.role, "viewer");
   assert.equal(joined.payload.permissions.editScript, false);
 
-  guest.send("state.patch", { patch: { script: "越权修改" } });
+  guest.send("state.patch", { patch: { script: "越权修改" }, baseScriptRevision: joined.payload.scriptRevision });
   const forbidden = await guest.next("error");
   assert.equal(forbidden.payload.code, "FORBIDDEN");
   assert.equal(forbidden.payload.snapshot.state.script, "初始文稿");
@@ -126,7 +132,7 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   const authorized = await guest.next("members.updated", (message) => message.payload.permissions.editScript === true);
   assert.equal(authorized.payload.permissions.editAppearance, true);
 
-  guest.send("state.patch", { patch: { script: "授权后的文稿" } });
+  guest.send("state.patch", { patch: { script: "授权后的文稿" }, baseScriptRevision: joined.payload.scriptRevision });
   const stateUpdate = await owner.next("state.patch");
   assert.equal(stateUpdate.payload.patch.script, "授权后的文稿");
 

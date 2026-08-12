@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, normalize, resolve, sep } from "node:path";
+import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
+import { basename, dirname, extname, normalize, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
@@ -13,11 +13,21 @@ const HOST = process.env.HOST || "0.0.0.0";
 const OWNER_GRACE_MS = Number(process.env.OWNER_GRACE_MS || 60_000);
 // 0 表示永久保留空房间；只有显式配置正数时才会自动过期。
 const EMPTY_ROOM_TTL_MS = Math.max(0, Number(process.env.EMPTY_ROOM_TTL_MS || 0) || 0);
+const OFFLINE_MEMBER_TTL_MS = Math.max(0, Number(process.env.OFFLINE_MEMBER_TTL_MS || 30 * 24 * 60 * 60_000) || 0);
+const PERSIST_INTERVAL_MS = Math.max(1_000, Number(process.env.PERSIST_INTERVAL_MS || 5_000) || 5_000);
+const MAX_ROOMS = Math.max(1, Number(process.env.MAX_ROOMS || 1_000) || 1_000);
+const MAX_MEMBERS_PER_ROOM = Math.max(2, Number(process.env.MAX_MEMBERS_PER_ROOM || 50) || 50);
+const ATTEMPT_WINDOW_MS = Math.max(10_000, Number(process.env.ATTEMPT_WINDOW_MS || 60_000) || 60_000);
+const MAX_ATTEMPTS_PER_IP = Math.max(10, Number(process.env.MAX_ATTEMPTS_PER_IP || 120) || 120);
 const MAX_MESSAGE_BYTES = 256 * 1024;
 const DATA_FILE = process.env.ROOM_DATA_FILE || resolve(ROOT, "data/rooms.json");
+const BACKUP_FILE = `${DATA_FILE}.bak`;
 const rooms = new Map();
 let persistTimer = null;
 let persistChain = Promise.resolve();
+let persistDirty = false;
+let lastPersistedAt = 0;
+const connectionAttempts = new Map();
 const publicFiles = new Set(["/index.html", "/app.js", "/sync-client.js", "/styles.css"]);
 
 const stateKeys = new Set([
@@ -83,6 +93,35 @@ function localOrigins(request) {
   }
   origins.push(`${protocol}://${requestHost}`);
   return [...new Set(origins)];
+}
+
+function clientAddress(request) {
+  const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || request.socket.remoteAddress || "unknown";
+}
+
+function consumeAttempt(ws) {
+  const now = Date.now();
+  const key = ws.clientAddress || "unknown";
+  const current = connectionAttempts.get(key);
+  const entry = !current || now - current.startedAt >= ATTEMPT_WINDOW_MS
+    ? { startedAt: now, count: 0 }
+    : current;
+  entry.count += 1;
+  connectionAttempts.set(key, entry);
+  return entry.count <= MAX_ATTEMPTS_PER_IP;
+}
+
+function originAllowed(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  const allowed = String(process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (allowed.includes(origin)) return true;
+  try { return new URL(origin).host === String(request.headers.host || ""); }
+  catch { return false; }
 }
 
 function cleanState(input = {}, partial = false) {
@@ -152,6 +191,7 @@ function roomSnapshot(room, member) {
     roomId: room.id,
     mode: room.mode,
     revision: room.revision,
+    scriptRevision: room.scriptRevision,
     state: room.state,
     playback: room.playback,
     self: publicMember(member),
@@ -175,11 +215,14 @@ function broadcastMembers(room) {
 }
 
 function serializedRooms() {
+  const now = Date.now();
+  for (const room of rooms.values()) pruneOfflineMembers(room, now);
   return [...rooms.values()].map((room) => ({
     id: room.id,
     mode: room.mode,
     ownerId: room.ownerId,
     revision: room.revision,
+    scriptRevision: room.scriptRevision,
     state: room.state,
     playback: room.playback,
     createdAt: room.createdAt,
@@ -190,39 +233,107 @@ function serializedRooms() {
       name: member.name,
       role: member.role,
       deviceMode: member.deviceMode,
-      joinedAt: member.joinedAt
+      joinedAt: member.joinedAt,
+      disconnectedAt: member.disconnectedAt
     }))
   }));
 }
 
-function persistRooms() {
+function pruneOfflineMembers(room, now = Date.now()) {
+  if (OFFLINE_MEMBER_TTL_MS <= 0) return false;
+  let changed = false;
+  for (const member of room.members.values()) {
+    if (member.deviceId === room.ownerId || member.connected) continue;
+    if (now - Number(member.disconnectedAt || now) < OFFLINE_MEMBER_TTL_MS) continue;
+    room.members.delete(member.deviceId);
+    changed = true;
+  }
+  return changed;
+}
+
+async function writeSnapshot(content) {
+  await mkdir(dirname(DATA_FILE), { recursive: true });
+  const temporaryFile = `${DATA_FILE}.${process.pid}.tmp`;
+  const handle = await open(temporaryFile, "w");
+  try {
+    await handle.writeFile(content, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try { await copyFile(DATA_FILE, BACKUP_FILE); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  await rename(temporaryFile, DATA_FILE);
+}
+
+function persistRooms(force = false) {
   clearTimeout(persistTimer);
   persistTimer = null;
-  const content = JSON.stringify({ version: 1, rooms: serializedRooms() }, null, 2);
+  if (!persistDirty && !force) return persistChain;
+  const content = JSON.stringify({ version: 2, rooms: serializedRooms() }, null, 2);
+  persistDirty = false;
   persistChain = persistChain.catch(() => {}).then(async () => {
-    await mkdir(dirname(DATA_FILE), { recursive: true });
-    const temporaryFile = `${DATA_FILE}.${process.pid}.tmp`;
-    await writeFile(temporaryFile, content, "utf8");
-    await rename(temporaryFile, DATA_FILE);
+    await writeSnapshot(content);
+    lastPersistedAt = Date.now();
   });
   return persistChain;
 }
 
-function schedulePersist() {
-  clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => persistRooms().catch((error) => console.error("保存房间数据失败：", error.message)), 150);
+function schedulePersist(urgent = false) {
+  persistDirty = true;
+  if (urgent) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+    persistRooms().catch((error) => console.error("保存房间数据失败：", error.message));
+    return;
+  }
+  if (!persistTimer) {
+    persistTimer = setTimeout(() => persistRooms().catch((error) => console.error("保存房间数据失败：", error.message)), PERSIST_INTERVAL_MS);
+  }
+}
+
+async function cleanupTemporaryFiles() {
+  try {
+    const prefix = `${basename(DATA_FILE)}.`;
+    const files = await readdir(dirname(DATA_FILE));
+    await Promise.all(files
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".tmp"))
+      .map((name) => unlink(resolve(dirname(DATA_FILE), name)).catch(() => {})));
+  } catch (error) {
+    if (error.code !== "ENOENT") console.error("清理临时快照失败：", error.message);
+  }
+}
+
+async function readRoomData() {
+  try { return JSON.parse(await readFile(DATA_FILE, "utf8")); }
+  catch (primaryError) {
+    if (primaryError.code === "ENOENT") throw primaryError;
+    try {
+      const backup = JSON.parse(await readFile(BACKUP_FILE, "utf8"));
+      console.warn("主房间快照损坏，已从备份恢复：", primaryError.message);
+      return backup;
+    } catch {
+      throw primaryError;
+    }
+  }
 }
 
 async function loadRooms() {
   try {
-    const stored = JSON.parse(await readFile(DATA_FILE, "utf8"));
+    await cleanupTemporaryFiles();
+    const stored = await readRoomData();
+    if (stored.version !== 2) {
+      const archivedFile = `${DATA_FILE}.legacy-${Date.now()}.bak`;
+      await rename(DATA_FILE, archivedFile);
+      console.warn(`旧版房间快照已归档到 ${archivedFile}，服务将使用空的 v3 数据启动。`);
+      return;
+    }
     const now = Date.now();
     for (const data of stored.rooms || []) {
       if (EMPTY_ROOM_TTL_MS > 0 && now - Number(data.lastActiveAt || data.createdAt) > EMPTY_ROOM_TTL_MS) continue;
       const members = new Map((data.members || []).map((member) => [member.deviceId, {
         ...member,
         connected: false,
-        disconnectedAt: now,
+        disconnectedAt: Number(member.disconnectedAt) || now,
         socket: null
       }]));
       if (!members.size) continue;
@@ -231,6 +342,7 @@ async function loadRooms() {
         mode: cleanRoomMode(data.mode),
         ownerId: data.ownerId,
         revision: Number(data.revision) || 1,
+        scriptRevision: Number(data.scriptRevision) || 1,
         state: cleanState(data.state),
         playback: { ...cleanPlayback(data.playback), playing: false },
         members,
@@ -239,6 +351,7 @@ async function loadRooms() {
         ownerTimer: null,
         emptyTimer: null
       };
+      pruneOfflineMembers(room, now);
       rooms.set(room.id, room);
       if (EMPTY_ROOM_TTL_MS > 0) {
         const remaining = Math.max(1, EMPTY_ROOM_TTL_MS - (now - room.lastActiveAt));
@@ -246,7 +359,9 @@ async function loadRooms() {
       }
     }
   } catch (error) {
-    if (error.code !== "ENOENT") console.error("读取房间数据失败：", error.message);
+    if (error.code === "ENOENT") return;
+    console.error("读取房间数据失败，服务未启动：", error.message);
+    throw error;
   }
 }
 
@@ -328,6 +443,8 @@ function attachMember(ws, room, member) {
 
 function handleCreate(ws, payload) {
   if (ws.context) return send(ws, "error", { code: "ALREADY_IN_ROOM", message: "当前连接已经加入房间" });
+  if (!consumeAttempt(ws)) return send(ws, "error", { code: "RATE_LIMITED", message: "操作过于频繁，请稍后再试" });
+  if (rooms.size >= MAX_ROOMS) return send(ws, "error", { code: "SERVER_CAPACITY", message: "服务器房间数量已达上限" });
   const id = roomCode();
   const deviceId = String(payload.deviceId || token(12)).slice(0, 80);
   const member = {
@@ -345,6 +462,7 @@ function handleCreate(ws, payload) {
     mode: cleanRoomMode(payload.roomMode),
     ownerId: deviceId,
     revision: 1,
+    scriptRevision: 1,
     state: cleanState(payload.state),
     playback: { ...cleanPlayback(payload.playback), sourceDeviceId: deviceId },
     members: new Map([[deviceId, member]]),
@@ -356,19 +474,22 @@ function handleCreate(ws, payload) {
   rooms.set(id, room);
   attachMember(ws, room, member);
   send(ws, "room.created", { ...roomSnapshot(room, member), reconnectToken: member.reconnectToken });
-  schedulePersist();
+  schedulePersist(true);
 }
 
 function handleJoin(ws, payload) {
   if (ws.context) return send(ws, "error", { code: "ALREADY_IN_ROOM", message: "当前连接已经加入房间" });
+  if (!consumeAttempt(ws)) return send(ws, "error", { code: "RATE_LIMITED", message: "操作过于频繁，请稍后再试" });
   const room = rooms.get(String(payload.roomId || "").trim().toUpperCase());
   if (!room) return send(ws, "error", { code: "ROOM_NOT_FOUND", message: "房间不存在或已经过期" });
+  pruneOfflineMembers(room);
 
   const requestedId = String(payload.deviceId || "").slice(0, 80);
   let member = room.members.get(requestedId);
   if (member && payload.reconnectToken === member.reconnectToken) {
     member.name = cleanName(payload.name || member.name);
   } else {
+    if (room.members.size >= MAX_MEMBERS_PER_ROOM) return send(ws, "error", { code: "ROOM_CAPACITY", message: "当前房间设备数量已达上限" });
     const deviceId = token(12);
     const deviceMode = cleanDeviceMode(payload.deviceMode);
     member = {
@@ -399,12 +520,22 @@ function handleStatePatch(ws, payload) {
   if (includesAppearance && !permissions(context.room, context.member).editAppearance) {
     return send(ws, "error", { code: "FORBIDDEN", message: "当前设备没有修改画面设置的权限", snapshot: roomSnapshot(context.room, context.member) });
   }
+  const baseScriptRevision = Number(payload.baseScriptRevision);
+  if (includesScript && (!Number.isInteger(baseScriptRevision) || baseScriptRevision !== context.room.scriptRevision)) {
+    return send(ws, "error", {
+      code: "STATE_CONFLICT",
+      message: "文稿已被其他设备更新，当前修改已保存为本机冲突备份",
+      rejectedPatch: cleanState(payload.patch, true),
+      snapshot: roomSnapshot(context.room, context.member)
+    });
+  }
   const patch = cleanState(payload.patch, true);
   if (!Object.keys(patch).length) return;
   context.room.state = { ...context.room.state, ...patch };
   context.room.revision += 1;
+  if (includesScript) context.room.scriptRevision += 1;
   context.room.lastActiveAt = Date.now();
-  broadcast(context.room, "state.patch", { patch, revision: context.room.revision, sourceDeviceId: context.member.deviceId }, ws);
+  broadcast(context.room, "state.patch", { patch, revision: context.room.revision, scriptRevision: context.room.scriptRevision, sourceDeviceId: context.member.deviceId });
   schedulePersist();
 }
 
@@ -424,7 +555,7 @@ function handlePlayback(ws, payload) {
   context.room.revision += 1;
   context.room.lastActiveAt = Date.now();
   broadcast(context.room, "playback.updated", { ...next, action, revision: context.room.revision, sourceDeviceId: context.member.deviceId }, ws);
-  schedulePersist();
+  schedulePersist(["pause", "seek", "top"].includes(action));
 }
 
 function handleRoomMode(ws, payload) {
@@ -451,6 +582,19 @@ function handleMemberUpdate(ws, payload) {
   context.room.revision += 1;
   context.room.lastActiveAt = Date.now();
   broadcastMembers(context.room);
+  schedulePersist(true);
+}
+
+function handleMemberRemove(ws, payload) {
+  const context = requirePermission(ws, "manageRoom");
+  if (!context) return;
+  const target = context.room.members.get(String(payload.deviceId));
+  if (!target || target.role === "owner") return send(ws, "error", { code: "MEMBER_NOT_FOUND", message: "该设备不存在或不能移除" });
+  target.socket?.close(4002, "设备已被房主移除");
+  context.room.members.delete(target.deviceId);
+  context.room.revision += 1;
+  broadcastMembers(context.room);
+  schedulePersist(true);
 }
 
 function handleTransferOwner(ws, payload) {
@@ -473,7 +617,23 @@ function handleCloseRoom(ws) {
   broadcast(context.room, "room.closed", { message: "房主已关闭房间" });
   for (const member of context.room.members.values()) member.socket?.close(4000, "房间已关闭");
   rooms.delete(context.room.id);
-  schedulePersist();
+  schedulePersist(true);
+}
+
+function handleLeaveRoom(ws) {
+  const room = rooms.get(ws.context?.roomId);
+  const member = room?.members.get(ws.context?.deviceId);
+  if (!room || !member) return;
+  if (member.role !== "owner") room.members.delete(member.deviceId);
+  member.socket = null;
+  member.connected = false;
+  member.disconnectedAt = Date.now();
+  ws.context = null;
+  send(ws, "room.left", { roomId: room.id });
+  broadcastMembers(room);
+  if (member.role === "owner") scheduleOwnerElection(room, member.deviceId);
+  scheduleEmptyRoom(room);
+  schedulePersist(true);
 }
 
 function handleMessage(ws, raw) {
@@ -501,8 +661,10 @@ function handleMessage(ws, raw) {
     "playback.update": handlePlayback,
     "room.mode": handleRoomMode,
     "member.update": handleMemberUpdate,
+    "member.remove": handleMemberRemove,
     "owner.transfer": handleTransferOwner,
-    "room.close": handleCloseRoom
+    "room.close": handleCloseRoom,
+    "room.leave": handleLeaveRoom
   };
   const handler = handlers[message.type];
   if (!handler) return send(ws, "error", { code: "UNKNOWN_MESSAGE", message: "不支持的消息类型" });
@@ -527,7 +689,7 @@ const httpServer = createServer(async (request, response) => {
     let pathname = decodeURIComponent(url.pathname);
     if (pathname === "/health") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({ ok: true, rooms: rooms.size, uptime: process.uptime() }));
+      response.end(JSON.stringify({ ok: true, rooms: rooms.size, uptime: process.uptime(), lastPersistedAt, persistDirty }));
       return;
     }
     if (pathname === "/api/info") {
@@ -563,7 +725,9 @@ const httpServer = createServer(async (request, response) => {
       "content-type": mimeTypes[extname(filePath)] || "application/octet-stream",
       "cache-control": [".html", ".js", ".css"].includes(extname(filePath)) ? "no-cache" : "public, max-age=3600",
       "x-content-type-options": "nosniff",
-      "x-frame-options": "SAMEORIGIN"
+      "x-frame-options": "SAMEORIGIN",
+      "referrer-policy": "no-referrer",
+      "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
     });
     response.end(content);
   } catch (error) {
@@ -576,11 +740,16 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES 
 httpServer.on("upgrade", (request, socket, head) => {
   const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
   if (url.pathname !== "/ws") return socket.destroy();
+  if (!originAllowed(request)) {
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    return;
+  }
   wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
 });
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, request) => {
   ws.isAlive = true;
+  ws.clientAddress = clientAddress(request);
   ws.on("pong", () => { ws.isAlive = true; });
   ws.on("message", (raw) => handleMessage(ws, raw));
   ws.on("close", () => handleDisconnect(ws));
@@ -609,7 +778,7 @@ async function shutdown() {
     if (room.ownerTimer) clearTimeout(room.ownerTimer);
     if (room.emptyTimer) clearTimeout(room.emptyTimer);
   }
-  try { await persistRooms(); } catch (error) { console.error("关闭前保存房间数据失败：", error.message); }
+  try { await persistRooms(true); } catch (error) { console.error("关闭前保存房间数据失败：", error.message); }
   for (const ws of wss.clients) ws.close(1012, "服务正在重启");
   setTimeout(() => {
     for (const ws of wss.clients) ws.terminate();
