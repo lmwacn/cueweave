@@ -48,8 +48,15 @@
   let preciseScrollTop = null;
   let lastProgressBroadcast = 0;
   let manualProgressTimer = null;
+  let manualScrollActive = false;
+  let manualScrollChanged = false;
+  let manualScrollResumeTimer = null;
+  let lastManualProgressBroadcast = 0;
+  let remoteManualTarget = null;
+  let lastRemoteScrollWriteAt = 0;
   const sync = window.teleprompterSync;
   const sharedStateKeys = Object.keys(defaults).filter((key) => key !== "focusMode");
+  const REFERENCE_STAGE_WIDTH = 1000;
 
   function loadState() {
     try {
@@ -102,14 +109,13 @@
     $("showGuide").checked = state.showGuide;
     $("mirrorHorizontal").setAttribute("aria-pressed", String(state.mirrorHorizontal));
     $("mirrorVertical").setAttribute("aria-pressed", String(state.mirrorVertical));
-    document.documentElement.style.setProperty("--prompt-font-size", `${state.fontSize}px`);
     document.documentElement.style.setProperty("--prompt-line-height", state.lineHeight);
-    document.documentElement.style.setProperty("--prompt-letter-spacing", `${state.letterSpacing}px`);
     document.documentElement.style.setProperty("--prompt-width", `${state.contentWidth}%`);
     document.documentElement.style.setProperty("--stage-background", state.backgroundColor);
     document.documentElement.style.setProperty("--stage-text", state.textColor);
     document.documentElement.style.setProperty("--guide-color", state.guideColor);
     document.documentElement.style.setProperty("--guide-position", `${state.guidePosition}%`);
+    applyResponsiveLayout();
     elements.guideLine.classList.toggle("hidden", !state.showGuide);
     elements.appShell.classList.toggle("focus-mode", state.focusMode);
     if (isInlineEditing) updateScriptMeta();
@@ -119,8 +125,71 @@
   }
 
   function renderScript() {
-    elements.promptContent.textContent = state.script;
+    elements.promptContent.replaceChildren();
+    elements.promptContent.classList.add("unified-layout");
+    const fragment = document.createDocumentFragment();
+    unifiedLines(state.script).forEach((line, index) => {
+      const row = document.createElement("span");
+      row.className = "prompt-line";
+      row.dataset.line = String(index);
+      row.textContent = line || "\u00a0";
+      fragment.append(row);
+    });
+    elements.promptContent.append(fragment);
     updateScriptMeta();
+  }
+
+  function applyResponsiveLayout() {
+    const stageWidth = elements.stage.clientWidth || REFERENCE_STAGE_WIDTH;
+    const stageHeight = elements.stage.clientHeight || window.innerHeight;
+    const supportsContainerUnits = window.CSS?.supports?.("font-size", "1cqw");
+    document.documentElement.style.setProperty(
+      "--prompt-font-size",
+      supportsContainerUnits ? `${state.fontSize / 10}cqw` : `${state.fontSize * stageWidth / REFERENCE_STAGE_WIDTH}px`
+    );
+    document.documentElement.style.setProperty(
+      "--prompt-letter-spacing",
+      supportsContainerUnits ? `${state.letterSpacing / 10}cqw` : `${state.letterSpacing * stageWidth / REFERENCE_STAGE_WIDTH}px`
+    );
+    document.documentElement.style.setProperty("--prompt-padding-top", `${stageHeight * state.guidePosition / 100}px`);
+    document.documentElement.style.setProperty("--prompt-padding-bottom", `${stageHeight * (100 - state.guidePosition) / 100}px`);
+  }
+
+  function graphemes(text) {
+    if (window.Intl?.Segmenter) {
+      return [...new Intl.Segmenter("zh-CN", { granularity: "grapheme" }).segment(text)].map((part) => part.segment);
+    }
+    return Array.from(text);
+  }
+
+  function glyphUnits(glyph) {
+    return /^[\x00-\xff]$/.test(glyph) ? (glyph === " " ? 0.4 : 0.55) : 1;
+  }
+
+  function unifiedLines(script) {
+    const advance = Math.max(1, state.fontSize + state.letterSpacing);
+    const unitsPerLine = Math.max(4, (REFERENCE_STAGE_WIDTH * state.contentWidth / 100) / advance);
+    const lines = [];
+    String(script).replace(/\r\n?/g, "\n").split("\n").forEach((paragraph) => {
+      if (!paragraph) {
+        lines.push("");
+        return;
+      }
+      let line = "";
+      let used = 0;
+      graphemes(paragraph).forEach((glyph) => {
+        const units = glyphUnits(glyph);
+        if (line && used + units > unitsPerLine) {
+          lines.push(line);
+          line = "";
+          used = 0;
+        }
+        line += glyph;
+        used += units;
+      });
+      lines.push(line);
+    });
+    return lines.length ? lines : [""];
   }
 
   function updateScriptMeta() {
@@ -164,6 +233,8 @@
     stopPlayback();
     if (shouldBroadcastPause) sync?.sendPlayback("pause", getPlaybackSnapshot());
     isInlineEditing = true;
+    elements.promptContent.classList.remove("unified-layout");
+    elements.promptContent.textContent = state.script;
     window.clearTimeout(aidTimer);
     elements.visualAid.classList.remove("visible");
     elements.promptContent.setAttribute("contenteditable", "plaintext-only");
@@ -203,6 +274,8 @@
   function stopPlayback() {
     isPlaying = false;
     lastFrameTime = 0;
+    manualScrollActive = false;
+    window.clearTimeout(manualScrollResumeTimer);
     if (animationFrame) cancelAnimationFrame(animationFrame);
     animationFrame = null;
     elements.playButton.classList.remove("playing");
@@ -210,23 +283,65 @@
     elements.playTitle.textContent = "开始滚动";
     ownsPlaybackClock = false;
     remotePlaybackAnchor = null;
+    remoteManualTarget = null;
     preciseScrollTop = null;
   }
 
   function tick(timestamp) {
-    if (!isPlaying) return;
+    if (!isPlaying && !remoteManualTarget) {
+      animationFrame = null;
+      return;
+    }
+    if (manualScrollActive) {
+      preciseScrollTop = elements.stage.scrollTop;
+      lastFrameTime = timestamp;
+      animationFrame = requestAnimationFrame(tick);
+      return;
+    }
     if (!lastFrameTime) lastFrameTime = timestamp;
     const deltaSeconds = Math.min((timestamp - lastFrameTime) / 1000, 0.05);
     lastFrameTime = timestamp;
     const previous = elements.stage.scrollTop;
-    let effectiveSpeed = state.scrollSpeed;
+    if (preciseScrollTop !== null && Math.abs(previous - preciseScrollTop) > 2) {
+      preciseScrollTop = previous;
+    }
+    if (remoteManualTarget) {
+      if (preciseScrollTop === null) preciseScrollTop = previous;
+      const drift = remoteManualTarget.position - preciseScrollTop;
+      const followAmount = 1 - Math.exp(-10 * deltaSeconds);
+      preciseScrollTop += drift * followAmount;
+      if (Math.abs(drift) < 0.75) preciseScrollTop = remoteManualTarget.position;
+      lastRemoteScrollWriteAt = performance.now();
+      elements.stage.scrollTop = preciseScrollTop;
+      const targetAge = performance.now() - remoteManualTarget.receivedAt;
+      if (Math.abs(remoteManualTarget.position - preciseScrollTop) < 0.75 && targetAge > 120) {
+        const completedTarget = remoteManualTarget;
+        remoteManualTarget = null;
+        if (completedTarget.playing) {
+          remotePlaybackAnchor = {
+            position: preciseScrollTop,
+            speed: localScrollSpeed(),
+            receivedAt: performance.now(),
+            playing: true
+          };
+        } else {
+          lastFrameTime = 0;
+          animationFrame = null;
+          return;
+        }
+      }
+      animationFrame = requestAnimationFrame(tick);
+      return;
+    }
+    const baseSpeed = localScrollSpeed();
+    let effectiveSpeed = baseSpeed;
     if (!ownsPlaybackClock && remotePlaybackAnchor?.playing) {
       const elapsedSeconds = Math.max(0, (performance.now() - remotePlaybackAnchor.receivedAt) / 1000);
       const expectedPosition = remotePlaybackAnchor.position + remotePlaybackAnchor.speed * elapsedSeconds;
       const drift = expectedPosition - elements.stage.scrollTop;
-      const correctionLimit = Math.max(6, state.scrollSpeed * 0.25);
+      const correctionLimit = Math.max(baseSpeed * 0.15, baseSpeed * 0.25);
       const correction = Math.abs(drift) < 4 ? 0 : Math.max(-correctionLimit, Math.min(correctionLimit, drift * 0.35));
-      effectiveSpeed = Math.max(state.scrollSpeed * 0.7, state.scrollSpeed + correction);
+      effectiveSpeed = Math.max(baseSpeed * 0.7, baseSpeed + correction);
     }
     if (preciseScrollTop === null) preciseScrollTop = elements.stage.scrollTop;
     preciseScrollTop += effectiveSpeed * deltaSeconds;
@@ -244,6 +359,50 @@
       sync.sendPlayback("sync", getPlaybackSnapshot());
     }
     animationFrame = requestAnimationFrame(tick);
+  }
+
+  function beginManualScroll() {
+    if (!hasPermission("controlProgress")) return;
+    window.clearTimeout(manualScrollResumeTimer);
+    manualScrollActive = true;
+    manualScrollChanged = false;
+    preciseScrollTop = elements.stage.scrollTop;
+    if (isPlaying) ownsPlaybackClock = true;
+    remotePlaybackAnchor = null;
+    remoteManualTarget = null;
+  }
+
+  function finishManualScroll(delay = 100) {
+    if (!manualScrollActive) return;
+    window.clearTimeout(manualScrollResumeTimer);
+    manualScrollResumeTimer = window.setTimeout(() => {
+      manualScrollActive = false;
+      preciseScrollTop = elements.stage.scrollTop;
+      lastFrameTime = 0;
+      window.clearTimeout(manualProgressTimer);
+      if (manualScrollChanged && sync?.permissions?.controlProgress) {
+        sync.sendPlayback("scrub", getPlaybackSnapshot());
+        lastProgressBroadcast = performance.now();
+        lastManualProgressBroadcast = lastProgressBroadcast;
+      }
+      manualScrollChanged = false;
+    }, delay);
+  }
+
+  function broadcastManualProgress() {
+    if (!sync?.permissions?.controlProgress) return;
+    const now = performance.now();
+    const remaining = 50 - (now - lastManualProgressBroadcast);
+    window.clearTimeout(manualProgressTimer);
+    if (remaining <= 0) {
+      sync.sendPlayback("scrub", getPlaybackSnapshot());
+      lastManualProgressBroadcast = now;
+      return;
+    }
+    manualProgressTimer = window.setTimeout(() => {
+      sync.sendPlayback("scrub", getPlaybackSnapshot());
+      lastManualProgressBroadcast = performance.now();
+    }, remaining);
   }
 
   function togglePlayback() {
@@ -369,10 +528,34 @@
     return maximum > 0 ? Math.min(1, Math.max(0, elements.stage.scrollTop / maximum)) : 0;
   }
 
+  function getLayoutMetrics() {
+    const style = getComputedStyle(elements.promptContent);
+    const lineHeight = Number.parseFloat(style.lineHeight) || state.fontSize * state.lineHeight;
+    const textOrigin = elements.promptContent.offsetTop + (Number.parseFloat(style.paddingTop) || 0);
+    const guideY = elements.stage.clientHeight * state.guidePosition / 100;
+    return { lineHeight, textOrigin, guideY };
+  }
+
+  function getLineAnchor() {
+    const { lineHeight, textOrigin, guideY } = getLayoutMetrics();
+    return lineHeight > 0 ? (elements.stage.scrollTop + guideY - textOrigin) / lineHeight : 0;
+  }
+
+  function scrollTopForAnchor(anchor) {
+    const { lineHeight, textOrigin, guideY } = getLayoutMetrics();
+    const maximum = Math.max(0, elements.stage.scrollHeight - elements.stage.clientHeight);
+    return Math.min(maximum, Math.max(0, textOrigin + anchor * lineHeight - guideY));
+  }
+
+  function localScrollSpeed() {
+    return state.scrollSpeed * elements.stage.clientWidth / REFERENCE_STAGE_WIDTH;
+  }
+
   function getPlaybackSnapshot() {
     return {
       playing: isPlaying,
       progress: getProgress(),
+      anchor: getLineAnchor(),
       speed: state.scrollSpeed,
       extent: Math.max(0, elements.stage.scrollHeight - elements.stage.clientHeight)
     };
@@ -390,9 +573,30 @@
     }
     requestAnimationFrame(() => {
       const maximum = elements.stage.scrollHeight - elements.stage.clientHeight;
-      const target = Math.max(0, maximum * Math.min(1, Math.max(0, Number(playback.progress) || 0)));
+      const target = Number.isFinite(Number(playback.anchor))
+        ? scrollTopForAnchor(Number(playback.anchor))
+        : Math.max(0, maximum * Math.min(1, Math.max(0, Number(playback.progress) || 0)));
       const action = playback.action || "snapshot";
       const drift = target - elements.stage.scrollTop;
+      if (action === "scrub") {
+        if (!playback.playing && isPlaying) stopPlayback();
+        remoteManualTarget = {
+          position: target,
+          receivedAt: performance.now(),
+          playing: Boolean(playback.playing)
+        };
+        remotePlaybackAnchor = null;
+        preciseScrollTop = elements.stage.scrollTop;
+        if (playback.playing && !isPlaying && state.script.trim()) {
+          isPlaying = true;
+          elements.playButton.classList.add("playing");
+          elements.playButton.setAttribute("aria-label", "暂停自动滚动");
+          elements.playTitle.textContent = "正在滚动";
+        }
+        if (!animationFrame) animationFrame = requestAnimationFrame(tick);
+        applyingRemotePlayback = false;
+        return;
+      }
       const requiresExactPosition = !playback.playing || action === "play" || action === "pause" || action === "seek" || action === "top" || action === "snapshot";
       if (requiresExactPosition) {
         elements.stage.scrollTop = target;
@@ -402,7 +606,7 @@
       }
       remotePlaybackAnchor = playback.playing && !ownsPlaybackClock ? {
         position: target,
-        speed: state.scrollSpeed,
+        speed: localScrollSpeed(),
         receivedAt: performance.now(),
         playing: true
       } : null;
@@ -536,9 +740,28 @@
         if (shouldBroadcast) sync?.sendPlayback("pause", getPlaybackSnapshot());
       }
     });
+    elements.stage.addEventListener("wheel", () => {
+      beginManualScroll();
+      finishManualScroll(140);
+    }, { passive: true });
+    elements.stage.addEventListener("keydown", (event) => {
+      if (!["PageUp", "PageDown", "Home", "End"].includes(event.key)) return;
+      beginManualScroll();
+      finishManualScroll(160);
+    });
+    elements.stage.addEventListener("pointerdown", beginManualScroll, { passive: true });
+    document.addEventListener("pointerup", () => finishManualScroll(80), { passive: true });
+    document.addEventListener("pointercancel", () => finishManualScroll(80), { passive: true });
     elements.stage.addEventListener("scroll", () => {
-      if (applyingRemotePlayback || isPlaying || !sync?.permissions?.controlProgress) return;
+      if (applyingRemotePlayback || !sync?.permissions?.controlProgress) return;
+      if (performance.now() - lastRemoteScrollWriteAt < 80) return;
+      if (isPlaying && !manualScrollActive) return;
       preciseScrollTop = elements.stage.scrollTop;
+      if (manualScrollActive) {
+        manualScrollChanged = true;
+        broadcastManualProgress();
+        return;
+      }
       window.clearTimeout(manualProgressTimer);
       manualProgressTimer = window.setTimeout(() => sync.sendPlayback("seek", getPlaybackSnapshot()), 180);
     }, { passive: true });
@@ -546,6 +769,22 @@
 
   bindEvents();
   applyState();
+  if (window.ResizeObserver) {
+    let previousStageWidth = elements.stage.clientWidth;
+    let previousLineHeight = getLayoutMetrics().lineHeight;
+    const resizeObserver = new ResizeObserver(() => {
+      const oldAnchor = previousLineHeight > 0 ? elements.stage.scrollTop / previousLineHeight : 0;
+      applyResponsiveLayout();
+      const nextLineHeight = getLayoutMetrics().lineHeight;
+      if (previousStageWidth && elements.stage.clientWidth !== previousStageWidth) {
+        elements.stage.scrollTop = Math.max(0, oldAnchor * nextLineHeight);
+        preciseScrollTop = elements.stage.scrollTop;
+      }
+      previousStageWidth = elements.stage.clientWidth;
+      previousLineHeight = nextLineHeight;
+    });
+    resizeObserver.observe(elements.stage);
+  }
   if (sync) {
     sync.setProviders(() => {
       const snapshot = {};

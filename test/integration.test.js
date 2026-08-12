@@ -133,13 +133,21 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   guest.send("state.patch", { patch: { fontSize: 80 } });
   assert.equal((await guest.next("error")).payload.code, "FORBIDDEN");
 
-  owner.send("playback.update", { action: "play", playing: true, progress: 0.25, speed: 52, extent: 2400 });
+  owner.send("playback.update", { action: "play", playing: true, progress: 0.25, anchor: 12.5, speed: 52, extent: 2400 });
   const playback = await guest.next("playback.updated");
   assert.equal(playback.payload.playing, true);
   assert.equal(playback.payload.progress, 0.25);
+  assert.equal(playback.payload.anchor, 12.5);
   assert.equal(playback.payload.speed, 52);
   assert.equal(playback.payload.extent, 2400);
   assert.equal(playback.payload.sourceDeviceId, created.payload.self.deviceId);
+
+  owner.send("playback.update", { action: "scrub", playing: true, progress: 0.4, anchor: 18.25, speed: 52, extent: 2400 });
+  const scrub = await guest.next("playback.updated");
+  assert.equal(scrub.payload.action, "scrub");
+  assert.equal(scrub.payload.playing, true);
+  assert.equal(scrub.payload.progress, 0.4);
+  assert.equal(scrub.payload.anchor, 18.25);
 
   owner.close();
   guest.close();

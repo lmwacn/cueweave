@@ -103,13 +103,15 @@ function cleanState(input = {}, partial = false) {
 }
 
 function cleanPlayback(input = {}) {
-  return {
+  const playback = {
     playing: Boolean(input.playing),
     progress: Math.min(1, Math.max(0, Number(input.progress) || 0)),
     speed: Math.min(180, Math.max(5, Number(input.speed) || 45)),
     extent: Math.max(0, Number(input.extent) || 0),
     updatedAt: Date.now()
   };
+  if (Number.isFinite(Number(input.anchor))) playback.anchor = Math.min(100_000, Math.max(-10_000, Number(input.anchor)));
+  return playback;
 }
 
 function permissions(room, member) {
@@ -402,12 +404,13 @@ function handleStatePatch(ws, payload) {
 }
 
 function handlePlayback(ws, payload) {
-  const action = ["play", "pause", "seek", "sync", "top"].includes(payload.action) ? payload.action : "sync";
-  const context = requirePermission(ws, action === "seek" || action === "sync" || action === "top" ? "controlProgress" : "controlPlayback");
+  const action = ["play", "pause", "seek", "scrub", "sync", "top"].includes(payload.action) ? payload.action : "sync";
+  const context = requirePermission(ws, action === "seek" || action === "scrub" || action === "sync" || action === "top" ? "controlProgress" : "controlPlayback");
   if (!context) return;
   const next = cleanPlayback({
     playing: action === "play" ? true : action === "pause" || action === "top" ? false : payload.playing,
     progress: action === "top" ? 0 : payload.progress,
+    anchor: action === "top" ? undefined : payload.anchor,
     speed: payload.speed,
     extent: payload.extent
   });

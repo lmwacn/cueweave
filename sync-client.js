@@ -306,7 +306,7 @@
     }
 
     updateConnection(status) {
-      const labels = { offline: "多端同步", connecting: "连接中…", connected: this.room?.roomId || "已连接", error: "连接异常" };
+      const labels = { offline: "多端同步", connecting: "连接中…", connected: "同步正常", error: "连接异常" };
       $("connectionLabel").textContent = labels[status];
       $("connectionDot").dataset.status = status;
       $("roomConnectionDot").dataset.status = status;
