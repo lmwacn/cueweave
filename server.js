@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
-import { basename, dirname, extname, normalize, resolve, sep } from "node:path";
+import { basename, extname, normalize, resolve, sep } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { networkInterfaces } from "node:os";
@@ -20,14 +20,20 @@ const MAX_MEMBERS_PER_ROOM = Math.max(2, Number(process.env.MAX_MEMBERS_PER_ROOM
 const ATTEMPT_WINDOW_MS = Math.max(10_000, Number(process.env.ATTEMPT_WINDOW_MS || 60_000) || 60_000);
 const MAX_ATTEMPTS_PER_IP = Math.max(10, Number(process.env.MAX_ATTEMPTS_PER_IP || 120) || 120);
 const MAX_MESSAGE_BYTES = 256 * 1024;
-const DATA_FILE = process.env.ROOM_DATA_FILE || resolve(ROOT, "data/rooms.json");
-const BACKUP_FILE = `${DATA_FILE}.bak`;
+const MAX_SOCKET_BUFFER_BYTES = Math.max(64 * 1024, Number(process.env.MAX_SOCKET_BUFFER_BYTES || 1024 * 1024) || 1024 * 1024);
+const TRUST_PROXY = process.env.TRUST_PROXY === "1" || process.env.TRUST_PROXY === "true";
+const DATA_DIR = process.env.ROOM_DATA_DIR || resolve(ROOT, "data/rooms-v4");
 const rooms = new Map();
 let persistTimer = null;
 let persistChain = Promise.resolve();
-let persistDirty = false;
+const dirtyRoomIds = new Set();
+const deletedRoomIds = new Set();
 let lastPersistedAt = 0;
+let lastPersistDurationMs = 0;
+let droppedBroadcasts = 0;
 const connectionAttempts = new Map();
+const qrAttempts = new Map();
+const qrCache = new Map();
 const publicFiles = new Set(["/index.html", "/app.js", "/sync-client.js", "/styles.css"]);
 
 const stateKeys = new Set([
@@ -80,6 +86,26 @@ function cleanRole(value) {
   return ["editor", "operator", "viewer"].includes(value) ? value : "viewer";
 }
 
+function createInviteTokens() {
+  return { viewer: token(), editor: token(), operator: token(), display: token() };
+}
+
+function cleanInviteTokens(value = {}) {
+  const fallback = createInviteTokens();
+  for (const key of Object.keys(fallback)) {
+    if (typeof value[key] === "string" && value[key].length >= 16) fallback[key] = value[key].slice(0, 120);
+  }
+  return fallback;
+}
+
+function invitedRole(room, inviteToken, deviceMode) {
+  if (deviceMode === "display") return "viewer";
+  const match = Object.entries(room.inviteTokens).find(([, value]) => value === inviteToken)?.[0];
+  if (match === "editor" || match === "operator" || match === "viewer") return match;
+  if (match === "display") return "viewer";
+  return room.mode === "open" ? (deviceMode === "director" ? "operator" : "editor") : "viewer";
+}
+
 function localOrigins(request) {
   const forwardedProtocol = String(request.headers["x-forwarded-proto"] || "").split(",")[0].trim();
   const protocol = forwardedProtocol || (request.socket.encrypted ? "https" : "http");
@@ -96,20 +122,23 @@ function localOrigins(request) {
 }
 
 function clientAddress(request) {
-  const forwarded = String(request.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  const forwarded = TRUST_PROXY ? String(request.headers["x-forwarded-for"] || "").split(",")[0].trim() : "";
   return forwarded || request.socket.remoteAddress || "unknown";
 }
 
-function consumeAttempt(ws) {
+function consumeAttemptFor(store, key, maximum = MAX_ATTEMPTS_PER_IP, windowMs = ATTEMPT_WINDOW_MS) {
   const now = Date.now();
-  const key = ws.clientAddress || "unknown";
-  const current = connectionAttempts.get(key);
-  const entry = !current || now - current.startedAt >= ATTEMPT_WINDOW_MS
+  const current = store.get(key);
+  const entry = !current || now - current.startedAt >= windowMs
     ? { startedAt: now, count: 0 }
     : current;
   entry.count += 1;
-  connectionAttempts.set(key, entry);
-  return entry.count <= MAX_ATTEMPTS_PER_IP;
+  store.set(key, entry);
+  return entry.count <= maximum;
+}
+
+function consumeAttempt(ws) {
+  return consumeAttemptFor(connectionAttempts, ws.clientAddress || "unknown");
 }
 
 function originAllowed(request) {
@@ -176,20 +205,36 @@ function publicMember(member) {
   };
 }
 
-function send(ws, type, payload = {}) {
-  if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, payload, serverTime: Date.now() }));
+function sendEncoded(ws, encoded, ephemeral = false) {
+  if (ws?.readyState !== WebSocket.OPEN) return false;
+  if (ws.bufferedAmount > MAX_SOCKET_BUFFER_BYTES) {
+    if (ephemeral) {
+      droppedBroadcasts += 1;
+      return false;
+    }
+    ws.close(1013, "连接过慢，请重新同步");
+    return false;
+  }
+  ws.send(encoded);
+  return true;
 }
 
-function broadcast(room, type, payload = {}, except = null) {
+function send(ws, type, payload = {}, ephemeral = false) {
+  return sendEncoded(ws, JSON.stringify({ type, payload, serverTime: Date.now() }), ephemeral);
+}
+
+function broadcast(room, type, payload = {}, except = null, ephemeral = false) {
+  const encoded = JSON.stringify({ type, payload, serverTime: Date.now() });
   for (const member of room.members.values()) {
-    if (member.socket && member.socket !== except) send(member.socket, type, payload);
+    if (member.socket && member.socket !== except) sendEncoded(member.socket, encoded, ephemeral);
   }
 }
 
 function roomSnapshot(room, member) {
-  return {
+  const snapshot = {
     roomId: room.id,
     mode: room.mode,
+    liveLocked: room.liveLocked,
     revision: room.revision,
     scriptRevision: room.scriptRevision,
     state: room.state,
@@ -199,6 +244,8 @@ function roomSnapshot(room, member) {
     members: [...room.members.values()].map(publicMember),
     ownerGraceMs: OWNER_GRACE_MS
   };
+  if (permissions(room, member).manageRoom) snapshot.inviteTokens = room.inviteTokens;
+  return snapshot;
 }
 
 function broadcastMembers(room) {
@@ -208,18 +255,22 @@ function broadcastMembers(room) {
       members,
       self: publicMember(member),
       mode: room.mode,
+      liveLocked: room.liveLocked,
+      inviteTokens: permissions(room, member).manageRoom ? room.inviteTokens : undefined,
       permissions: permissions(room, member)
     });
   }
-  schedulePersist();
+  schedulePersist(room);
 }
 
-function serializedRooms() {
-  const now = Date.now();
-  for (const room of rooms.values()) pruneOfflineMembers(room, now);
-  return [...rooms.values()].map((room) => ({
+function serializedRoom(room) {
+  pruneOfflineMembers(room);
+  return {
+    version: 4,
     id: room.id,
     mode: room.mode,
+    liveLocked: room.liveLocked,
+    inviteTokens: room.inviteTokens,
     ownerId: room.ownerId,
     revision: room.revision,
     scriptRevision: room.scriptRevision,
@@ -236,7 +287,7 @@ function serializedRooms() {
       joinedAt: member.joinedAt,
       disconnectedAt: member.disconnectedAt
     }))
-  }));
+  };
 }
 
 function pruneOfflineMembers(room, now = Date.now()) {
@@ -251,9 +302,15 @@ function pruneOfflineMembers(room, now = Date.now()) {
   return changed;
 }
 
-async function writeSnapshot(content) {
-  await mkdir(dirname(DATA_FILE), { recursive: true });
-  const temporaryFile = `${DATA_FILE}.${process.pid}.tmp`;
+function roomDataFile(roomId) {
+  return resolve(DATA_DIR, `${roomId}.json`);
+}
+
+async function writeRoomSnapshot(roomId, content) {
+  await mkdir(DATA_DIR, { recursive: true });
+  const targetFile = roomDataFile(roomId);
+  const backupFile = `${targetFile}.bak`;
+  const temporaryFile = `${targetFile}.${process.pid}.tmp`;
   const handle = await open(temporaryFile, "w");
   try {
     await handle.writeFile(content, "utf8");
@@ -261,25 +318,46 @@ async function writeSnapshot(content) {
   } finally {
     await handle.close();
   }
-  try { await copyFile(DATA_FILE, BACKUP_FILE); } catch (error) { if (error.code !== "ENOENT") throw error; }
-  await rename(temporaryFile, DATA_FILE);
+  try { await copyFile(targetFile, backupFile); } catch (error) { if (error.code !== "ENOENT") throw error; }
+  await rename(temporaryFile, targetFile);
+}
+
+async function deleteRoomSnapshot(roomId) {
+  await Promise.all([
+    unlink(roomDataFile(roomId)).catch((error) => { if (error.code !== "ENOENT") throw error; }),
+    unlink(`${roomDataFile(roomId)}.bak`).catch((error) => { if (error.code !== "ENOENT") throw error; })
+  ]);
 }
 
 function persistRooms(force = false) {
   clearTimeout(persistTimer);
   persistTimer = null;
-  if (!persistDirty && !force) return persistChain;
-  const content = JSON.stringify({ version: 2, rooms: serializedRooms() }, null, 2);
-  persistDirty = false;
+  if (force) for (const roomId of rooms.keys()) dirtyRoomIds.add(roomId);
+  if (!dirtyRoomIds.size && !deletedRoomIds.size) return persistChain;
+  const writes = [...dirtyRoomIds]
+    .filter((roomId) => rooms.has(roomId))
+    .map((roomId) => [roomId, JSON.stringify(serializedRoom(rooms.get(roomId))) ]);
+  const deletions = [...deletedRoomIds].filter((roomId) => !rooms.has(roomId));
+  writes.forEach(([roomId]) => dirtyRoomIds.delete(roomId));
+  deletions.forEach((roomId) => deletedRoomIds.delete(roomId));
   persistChain = persistChain.catch(() => {}).then(async () => {
-    await writeSnapshot(content);
-    lastPersistedAt = Date.now();
+    const startedAt = performance.now();
+    try {
+      for (const [roomId, content] of writes) await writeRoomSnapshot(roomId, content);
+      for (const roomId of deletions) await deleteRoomSnapshot(roomId);
+      lastPersistedAt = Date.now();
+      lastPersistDurationMs = performance.now() - startedAt;
+    } catch (error) {
+      writes.forEach(([roomId]) => dirtyRoomIds.add(roomId));
+      deletions.forEach((roomId) => deletedRoomIds.add(roomId));
+      throw error;
+    }
   });
   return persistChain;
 }
 
-function schedulePersist(urgent = false) {
-  persistDirty = true;
+function schedulePersist(room, urgent = false) {
+  if (room?.id) dirtyRoomIds.add(room.id);
   if (urgent) {
     clearTimeout(persistTimer);
     persistTimer = null;
@@ -293,43 +371,44 @@ function schedulePersist(urgent = false) {
 
 async function cleanupTemporaryFiles() {
   try {
-    const prefix = `${basename(DATA_FILE)}.`;
-    const files = await readdir(dirname(DATA_FILE));
+    const files = await readdir(DATA_DIR);
     await Promise.all(files
-      .filter((name) => name.startsWith(prefix) && name.endsWith(".tmp"))
-      .map((name) => unlink(resolve(dirname(DATA_FILE), name)).catch(() => {})));
+      .filter((name) => name.endsWith(".tmp"))
+      .map((name) => unlink(resolve(DATA_DIR, name)).catch(() => {})));
   } catch (error) {
     if (error.code !== "ENOENT") console.error("清理临时快照失败：", error.message);
   }
 }
 
-async function readRoomData() {
-  try { return JSON.parse(await readFile(DATA_FILE, "utf8")); }
+async function readRoomData(file) {
+  try { return JSON.parse(await readFile(file, "utf8")); }
   catch (primaryError) {
-    if (primaryError.code === "ENOENT") throw primaryError;
     try {
-      const backup = JSON.parse(await readFile(BACKUP_FILE, "utf8"));
-      console.warn("主房间快照损坏，已从备份恢复：", primaryError.message);
+      const backup = JSON.parse(await readFile(`${file}.bak`, "utf8"));
+      console.warn(`房间快照 ${basename(file)} 损坏，已从备份恢复：${primaryError.message}`);
       return backup;
-    } catch {
-      throw primaryError;
-    }
+    } catch { throw primaryError; }
   }
 }
 
 async function loadRooms() {
   try {
+    await mkdir(DATA_DIR, { recursive: true });
     await cleanupTemporaryFiles();
-    const stored = await readRoomData();
-    if (stored.version !== 2) {
-      const archivedFile = `${DATA_FILE}.legacy-${Date.now()}.bak`;
-      await rename(DATA_FILE, archivedFile);
-      console.warn(`旧版房间快照已归档到 ${archivedFile}，服务将使用空的 v3 数据启动。`);
-      return;
-    }
+    const files = (await readdir(DATA_DIR)).filter((name) => /^[A-Z2-9]{6}\.json$/.test(name));
     const now = Date.now();
-    for (const data of stored.rooms || []) {
-      if (EMPTY_ROOM_TTL_MS > 0 && now - Number(data.lastActiveAt || data.createdAt) > EMPTY_ROOM_TTL_MS) continue;
+    for (const file of files) {
+      let data;
+      try { data = await readRoomData(resolve(DATA_DIR, file)); }
+      catch (error) {
+        console.error(`跳过无法恢复的房间快照 ${file}：${error.message}`);
+        continue;
+      }
+      if (data.version !== 4) continue;
+      if (EMPTY_ROOM_TTL_MS > 0 && now - Number(data.lastActiveAt || data.createdAt) > EMPTY_ROOM_TTL_MS) {
+        deletedRoomIds.add(data.id);
+        continue;
+      }
       const members = new Map((data.members || []).map((member) => [member.deviceId, {
         ...member,
         connected: false,
@@ -340,6 +419,8 @@ async function loadRooms() {
       const room = {
         id: data.id,
         mode: cleanRoomMode(data.mode),
+        liveLocked: Boolean(data.liveLocked),
+        inviteTokens: cleanInviteTokens(data.inviteTokens),
         ownerId: data.ownerId,
         revision: Number(data.revision) || 1,
         scriptRevision: Number(data.scriptRevision) || 1,
@@ -355,20 +436,14 @@ async function loadRooms() {
       rooms.set(room.id, room);
       if (EMPTY_ROOM_TTL_MS > 0) {
         const remaining = Math.max(1, EMPTY_ROOM_TTL_MS - (now - room.lastActiveAt));
-        room.emptyTimer = setTimeout(() => { rooms.delete(room.id); schedulePersist(); }, remaining);
+        room.emptyTimer = setTimeout(() => removeRoom(room.id, true), remaining);
       }
     }
+    if (deletedRoomIds.size) await persistRooms();
   } catch (error) {
-    if (error.code === "ENOENT") return;
     console.error("读取房间数据失败，服务未启动：", error.message);
     throw error;
   }
-}
-
-function initialRole(roomMode, deviceMode) {
-  if (deviceMode === "display") return "viewer";
-  if (roomMode === "open") return deviceMode === "director" ? "operator" : "editor";
-  return "viewer";
 }
 
 function requirePermission(ws, key) {
@@ -395,9 +470,19 @@ function scheduleEmptyRoom(room) {
   if ([...room.members.values()].some((member) => member.connected)) return;
   room.lastActiveAt = Date.now();
   if (EMPTY_ROOM_TTL_MS > 0) {
-    room.emptyTimer = setTimeout(() => { rooms.delete(room.id); schedulePersist(); }, EMPTY_ROOM_TTL_MS);
+    room.emptyTimer = setTimeout(() => removeRoom(room.id, true), EMPTY_ROOM_TTL_MS);
   }
-  schedulePersist();
+  schedulePersist(room);
+}
+
+function removeRoom(roomId, urgent = false) {
+  const room = rooms.get(roomId);
+  if (room?.ownerTimer) clearTimeout(room.ownerTimer);
+  if (room?.emptyTimer) clearTimeout(room.emptyTimer);
+  rooms.delete(roomId);
+  dirtyRoomIds.delete(roomId);
+  deletedRoomIds.add(roomId);
+  schedulePersist(null, urgent);
 }
 
 function electOwner(room, previousOwnerId) {
@@ -460,6 +545,8 @@ function handleCreate(ws, payload) {
   const room = {
     id,
     mode: cleanRoomMode(payload.roomMode),
+    liveLocked: false,
+    inviteTokens: createInviteTokens(),
     ownerId: deviceId,
     revision: 1,
     scriptRevision: 1,
@@ -474,7 +561,7 @@ function handleCreate(ws, payload) {
   rooms.set(id, room);
   attachMember(ws, room, member);
   send(ws, "room.created", { ...roomSnapshot(room, member), reconnectToken: member.reconnectToken });
-  schedulePersist(true);
+  schedulePersist(room, true);
 }
 
 function handleJoin(ws, payload) {
@@ -496,7 +583,7 @@ function handleJoin(ws, payload) {
       deviceId,
       reconnectToken: token(),
       name: cleanName(payload.name),
-      role: initialRole(room.mode, deviceMode),
+      role: invitedRole(room, String(payload.inviteToken || ""), deviceMode),
       deviceMode,
       connected: true,
       joinedAt: Date.now(),
@@ -517,6 +604,9 @@ function handleStatePatch(ws, payload) {
   const includesAppearance = patchKeys.some((key) => key !== "script");
   const context = requirePermission(ws, includesScript ? "editScript" : "editAppearance");
   if (!context) return;
+  if (context.room.liveLocked) {
+    return send(ws, "error", { code: "LIVE_LOCKED", message: "直播进行中，结束直播后才能修改文稿和画面", snapshot: roomSnapshot(context.room, context.member) });
+  }
   if (includesAppearance && !permissions(context.room, context.member).editAppearance) {
     return send(ws, "error", { code: "FORBIDDEN", message: "当前设备没有修改画面设置的权限", snapshot: roomSnapshot(context.room, context.member) });
   }
@@ -536,7 +626,7 @@ function handleStatePatch(ws, payload) {
   if (includesScript) context.room.scriptRevision += 1;
   context.room.lastActiveAt = Date.now();
   broadcast(context.room, "state.patch", { patch, revision: context.room.revision, scriptRevision: context.room.scriptRevision, sourceDeviceId: context.member.deviceId });
-  schedulePersist();
+  schedulePersist(context.room);
 }
 
 function handlePlayback(ws, payload) {
@@ -554,8 +644,14 @@ function handlePlayback(ws, payload) {
   context.room.playback = next;
   context.room.revision += 1;
   context.room.lastActiveAt = Date.now();
-  broadcast(context.room, "playback.updated", { ...next, action, revision: context.room.revision, sourceDeviceId: context.member.deviceId }, ws);
-  schedulePersist(["pause", "seek", "top"].includes(action));
+  broadcast(
+    context.room,
+    "playback.updated",
+    { ...next, action, revision: context.room.revision, sourceDeviceId: context.member.deviceId },
+    ws,
+    action === "scrub" || action === "sync"
+  );
+  schedulePersist(context.room, ["pause", "seek", "top"].includes(action));
 }
 
 function handleRoomMode(ws, payload) {
@@ -565,6 +661,22 @@ function handleRoomMode(ws, payload) {
   context.room.revision += 1;
   context.room.lastActiveAt = Date.now();
   broadcastMembers(context.room);
+}
+
+function handleRoomLive(ws, payload) {
+  const context = requirePermission(ws, "manageRoom");
+  if (!context) return;
+  context.room.liveLocked = Boolean(payload.liveLocked);
+  context.room.revision += 1;
+  context.room.lastActiveAt = Date.now();
+  if (!context.room.liveLocked) context.room.playback.playing = false;
+  broadcastMembers(context.room);
+  broadcast(context.room, "room.live", {
+    liveLocked: context.room.liveLocked,
+    revision: context.room.revision,
+    message: context.room.liveLocked ? "直播已开始，文稿和画面已锁定" : "直播已结束，可以继续编辑"
+  });
+  schedulePersist(context.room, true);
 }
 
 function handleMemberUpdate(ws, payload) {
@@ -582,7 +694,7 @@ function handleMemberUpdate(ws, payload) {
   context.room.revision += 1;
   context.room.lastActiveAt = Date.now();
   broadcastMembers(context.room);
-  schedulePersist(true);
+  schedulePersist(context.room, true);
 }
 
 function handleMemberRemove(ws, payload) {
@@ -594,7 +706,7 @@ function handleMemberRemove(ws, payload) {
   context.room.members.delete(target.deviceId);
   context.room.revision += 1;
   broadcastMembers(context.room);
-  schedulePersist(true);
+  schedulePersist(context.room, true);
 }
 
 function handleTransferOwner(ws, payload) {
@@ -616,8 +728,7 @@ function handleCloseRoom(ws) {
   if (!context) return;
   broadcast(context.room, "room.closed", { message: "房主已关闭房间" });
   for (const member of context.room.members.values()) member.socket?.close(4000, "房间已关闭");
-  rooms.delete(context.room.id);
-  schedulePersist(true);
+  removeRoom(context.room.id, true);
 }
 
 function handleLeaveRoom(ws) {
@@ -633,21 +744,24 @@ function handleLeaveRoom(ws) {
   broadcastMembers(room);
   if (member.role === "owner") scheduleOwnerElection(room, member.deviceId);
   scheduleEmptyRoom(room);
-  schedulePersist(true);
+  schedulePersist(room, true);
 }
 
 function handleMessage(ws, raw) {
   if (raw.length > MAX_MESSAGE_BYTES) return ws.close(1009, "消息过大");
+  let message;
+  try { message = JSON.parse(raw.toString()); }
+  catch { return send(ws, "error", { code: "INVALID_JSON", message: "消息格式错误" }); }
   const now = Date.now();
   if (!ws.rateWindowAt || now - ws.rateWindowAt > 10_000) {
     ws.rateWindowAt = now;
     ws.rateCount = 0;
+    ws.rateEphemeralCount = 0;
   }
-  ws.rateCount += 1;
-  if (ws.rateCount > 250) return ws.close(1008, "消息发送过于频繁");
-  let message;
-  try { message = JSON.parse(raw.toString()); }
-  catch { return send(ws, "error", { code: "INVALID_JSON", message: "消息格式错误" }); }
+  const ephemeralPlayback = message.type === "playback.update" && ["scrub", "sync"].includes(message.payload?.action);
+  if (ephemeralPlayback) ws.rateEphemeralCount = (ws.rateEphemeralCount || 0) + 1;
+  else ws.rateCount += 1;
+  if (ws.rateCount > 250 || ws.rateEphemeralCount > 600) return ws.close(1008, "消息发送过于频繁");
   const payload = message.payload || {};
   const handlers = {
     "room.create": handleCreate,
@@ -660,6 +774,7 @@ function handleMessage(ws, raw) {
     "state.patch": handleStatePatch,
     "playback.update": handlePlayback,
     "room.mode": handleRoomMode,
+    "room.live": handleRoomLive,
     "member.update": handleMemberUpdate,
     "member.remove": handleMemberRemove,
     "owner.transfer": handleTransferOwner,
@@ -689,7 +804,17 @@ const httpServer = createServer(async (request, response) => {
     let pathname = decodeURIComponent(url.pathname);
     if (pathname === "/health") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({ ok: true, rooms: rooms.size, uptime: process.uptime(), lastPersistedAt, persistDirty }));
+      response.end(JSON.stringify({
+        ok: true,
+        rooms: rooms.size,
+        clients: wss.clients.size,
+        uptime: process.uptime(),
+        lastPersistedAt,
+        lastPersistDurationMs: Number(lastPersistDurationMs.toFixed(2)),
+        dirtyRooms: dirtyRoomIds.size,
+        droppedBroadcasts,
+        memory: process.memoryUsage().rss
+      }));
       return;
     }
     if (pathname === "/api/info") {
@@ -700,12 +825,20 @@ const httpServer = createServer(async (request, response) => {
     if (pathname === "/api/qr") {
       const data = url.searchParams.get("data") || "";
       if (!data || data.length > 2048) throw Object.assign(new Error("Bad request"), { statusCode: 400 });
-      const svg = await QRCode.toString(data, {
-        type: "svg",
-        errorCorrectionLevel: "M",
-        margin: 2,
-        color: { dark: "#11151d", light: "#ffffff" }
-      });
+      if (!consumeAttemptFor(qrAttempts, clientAddress(request), 60, 60_000)) {
+        throw Object.assign(new Error("Too many requests"), { statusCode: 429 });
+      }
+      let svg = qrCache.get(data);
+      if (!svg) {
+        svg = await QRCode.toString(data, {
+          type: "svg",
+          errorCorrectionLevel: "M",
+          margin: 2,
+          color: { dark: "#11151d", light: "#ffffff" }
+        });
+        qrCache.set(data, svg);
+        if (qrCache.size > 100) qrCache.delete(qrCache.keys().next().value);
+      }
       response.writeHead(200, {
         "content-type": "image/svg+xml; charset=utf-8",
         "cache-control": "private, max-age=300",
@@ -732,7 +865,7 @@ const httpServer = createServer(async (request, response) => {
     response.end(content);
   } catch (error) {
     response.writeHead(error.statusCode || 404, { "content-type": "text/plain; charset=utf-8" });
-    response.end(error.statusCode === 403 ? "Forbidden" : "Not found");
+    response.end(error.statusCode === 403 ? "Forbidden" : error.statusCode === 429 ? "Too many requests" : "Not found");
   }
 });
 
@@ -758,6 +891,10 @@ wss.on("connection", (ws, request) => {
 });
 
 const heartbeat = setInterval(() => {
+  const now = Date.now();
+  for (const store of [connectionAttempts, qrAttempts]) {
+    for (const [key, entry] of store) if (now - entry.startedAt > Math.max(ATTEMPT_WINDOW_MS, 60_000) * 2) store.delete(key);
+  }
   for (const ws of wss.clients) {
     if (!ws.isAlive) { ws.terminate(); continue; }
     ws.isAlive = false;

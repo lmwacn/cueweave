@@ -1,9 +1,9 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "cueweave-teleprompter-v3";
-  const LOCAL_VIEW_KEY = "cueweave-local-view-v3";
-  const DRAFT_HISTORY_KEY = "cueweave-draft-history-v3";
+  const STORAGE_KEY = "cueweave-teleprompter-v4";
+  const LOCAL_VIEW_KEY = "cueweave-local-view-v4";
+  const DRAFT_DB_NAME = "cueweave-drafts-v4";
   const MAX_DRAFT_HISTORY = 10;
   const DEFAULT_SCRIPT = `大家好，欢迎使用 CueWeave 多端同步提词器。
 
@@ -69,8 +69,12 @@
   let remoteManualTarget = null;
   let lastRemoteScrollWriteAt = 0;
   let draftBackupTimer = null;
-  let draftHistory = loadDraftHistory();
+  let draftHistory = [];
   let wakeLock = null;
+  let renderTimer = null;
+  let persistenceFailed = false;
+  let draftDbPromise = null;
+  const segmenter = window.Intl?.Segmenter ? new Intl.Segmenter("zh-CN", { granularity: "grapheme" }) : null;
   const sync = window.teleprompterSync;
   const sharedStateKeys = Object.keys(defaults).filter((key) => key !== "focusMode");
   const REFERENCE_STAGE_WIDTH = 1000;
@@ -105,11 +109,29 @@
     try { localStorage.setItem(LOCAL_VIEW_KEY, JSON.stringify(localView)); } catch {}
   }
 
-  function loadDraftHistory() {
+  function draftDatabase() {
+    if (!window.indexedDB) return Promise.reject(new Error("当前浏览器不支持稿件数据库"));
+    if (draftDbPromise) return draftDbPromise;
+    draftDbPromise = new Promise((resolve, reject) => {
+      const request = indexedDB.open(DRAFT_DB_NAME, 1);
+      request.onupgradeneeded = () => request.result.createObjectStore("drafts", { keyPath: "id" });
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return draftDbPromise;
+  }
+
+  async function loadDraftHistory() {
     try {
-      const stored = JSON.parse(localStorage.getItem(DRAFT_HISTORY_KEY) || "[]");
-      return Array.isArray(stored) ? stored.filter((item) => item?.id && typeof item.script === "string").slice(0, MAX_DRAFT_HISTORY) : [];
-    } catch { return []; }
+      const db = await draftDatabase();
+      const drafts = await new Promise((resolve, reject) => {
+        const request = db.transaction("drafts").objectStore("drafts").getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      draftHistory = drafts.sort((a, b) => b.savedAt - a.savedAt).slice(0, MAX_DRAFT_HISTORY);
+      renderDraftHistory();
+    } catch { draftHistory = []; }
   }
 
   function renderDraftHistory() {
@@ -124,12 +146,26 @@
     $("restoreDraftButton").disabled = !select.value || !hasPermission("editScript");
   }
 
-  function backupDraft(reason, script = state.script) {
+  async function backupDraft(reason, script = state.script) {
     const content = String(script || "").slice(0, 100_000);
     if (!content.trim() || draftHistory[0]?.script === content) return;
     draftHistory.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, savedAt: Date.now(), reason, script: content });
+    const removedDrafts = draftHistory.slice(MAX_DRAFT_HISTORY);
     draftHistory = draftHistory.slice(0, MAX_DRAFT_HISTORY);
-    try { localStorage.setItem(DRAFT_HISTORY_KEY, JSON.stringify(draftHistory)); } catch { draftHistory = draftHistory.slice(0, 5); }
+    try {
+      const db = await draftDatabase();
+      const transaction = db.transaction("drafts", "readwrite");
+      const store = transaction.objectStore("drafts");
+      store.put(draftHistory[0]);
+      removedDrafts.forEach((draft) => store.delete(draft.id));
+      await new Promise((resolve, reject) => {
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+      });
+    } catch {
+      persistenceFailed = true;
+      updateSaveStatus("本机备份失败", true);
+    }
     renderDraftHistory();
   }
 
@@ -138,14 +174,31 @@
     draftBackupTimer = window.setTimeout(() => backupDraft("自动备份"), 30_000);
   }
 
+  function updateSaveStatus(text, failed = false) {
+    elements.saveState.innerHTML = `<i></i> ${text}`;
+    elements.saveState.classList.toggle("error", failed);
+  }
+
+  function persistLocalState() {
+    window.clearTimeout(saveTimer);
+    saveTimer = null;
+    const persistentState = { ...state, focusMode: false };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState));
+      persistenceFailed = false;
+      updateSaveStatus(sync?.room ? "本机已保存 · 等待同步" : "本机已保存");
+      return true;
+    } catch {
+      persistenceFailed = true;
+      updateSaveStatus("本机保存失败，请导出文稿", true);
+      return false;
+    }
+  }
+
   function saveState(changedKeys = sharedStateKeys) {
     window.clearTimeout(saveTimer);
-    elements.saveState.innerHTML = "<i></i> 正在保存";
-    saveTimer = window.setTimeout(() => {
-      const persistentState = { ...state, focusMode: false };
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState)); } catch {}
-      elements.saveState.innerHTML = "<i></i> 已自动保存";
-    }, 280);
+    updateSaveStatus("正在保存");
+    saveTimer = window.setTimeout(persistLocalState, 280);
     if (changedKeys.includes("script")) scheduleDraftBackup();
     if (!applyingRemoteState && sync) {
       const patch = {};
@@ -223,8 +276,8 @@
   }
 
   function graphemes(text) {
-    if (window.Intl?.Segmenter) {
-      return [...new Intl.Segmenter("zh-CN", { granularity: "grapheme" }).segment(text)].map((part) => part.segment);
+    if (segmenter) {
+      return [...segmenter.segment(text)].map((part) => part.segment);
     }
     return Array.from(text);
   }
@@ -257,6 +310,11 @@
       lines.push(line);
     });
     return lines.length ? lines : [""];
+  }
+
+  function scheduleScriptRender() {
+    window.clearTimeout(renderTimer);
+    renderTimer = window.setTimeout(renderScript, 120);
   }
 
   function updateScriptMeta() {
@@ -397,17 +455,25 @@
 
   async function updateWakeLock() {
     const shouldLock = (isPlaying || Boolean(document.fullscreenElement)) && !document.hidden;
+    const status = $("screenAwakeStatus");
     if (!shouldLock && wakeLock) {
       const current = wakeLock;
       wakeLock = null;
       try { await current.release(); } catch {}
+      status.textContent = "";
       return;
     }
-    if (!shouldLock || wakeLock || !navigator.wakeLock?.request) return;
+    if (!shouldLock) { status.textContent = ""; return; }
+    if (wakeLock) return;
+    if (!navigator.wakeLock?.request) {
+      status.textContent = "屏幕常亮不可用，请关闭系统自动锁屏";
+      return;
+    }
     try {
       wakeLock = await navigator.wakeLock.request("screen");
-      wakeLock.addEventListener("release", () => { wakeLock = null; });
-    } catch {}
+      status.textContent = "屏幕常亮已开启";
+      wakeLock.addEventListener("release", () => { wakeLock = null; status.textContent = "屏幕常亮已释放"; });
+    } catch { status.textContent = "屏幕常亮失败，请关闭系统自动锁屏"; }
   }
 
   function tick(timestamp) {
@@ -826,8 +892,22 @@
     elements.scriptInput.addEventListener("focus", () => { if (isInlineEditing) exitInlineEdit(); });
     elements.scriptInput.addEventListener("input", (event) => {
       state.script = event.target.value;
-      renderScript();
+      updateScriptMeta();
+      scheduleScriptRender();
       saveState(["script"]);
+    });
+    $("mobileMoreButton").addEventListener("click", () => {
+      const menu = $("mobileTransportMenu");
+      const open = menu.classList.toggle("hidden") === false;
+      $("mobileMoreButton").setAttribute("aria-expanded", String(open));
+    });
+    $("mobileBackToTopButton").addEventListener("click", () => {
+      $("mobileTransportMenu").classList.add("hidden");
+      backToTop();
+    });
+    $("mobileFocusButton").addEventListener("click", () => {
+      $("mobileTransportMenu").classList.add("hidden");
+      toggleFocus();
     });
     controlIds.forEach((id) => {
       $(id).addEventListener("input", (event) => {
@@ -897,12 +977,10 @@
       if (event.key === "Escape") closeAppearancePopover();
       if (event.key === "Escape" && state.focusMode && !document.fullscreenElement) toggleFocus();
     });
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden && isPlaying) {
-        const shouldBroadcast = ownsPlaybackClock;
-        stopPlayback();
-        if (shouldBroadcast) sync?.sendPlayback("pause", getPlaybackSnapshot());
-      } else updateWakeLock();
+    document.addEventListener("visibilitychange", updateWakeLock);
+    window.addEventListener("pagehide", () => {
+      if (saveTimer) persistLocalState();
+      sync?.flushStatePatch?.();
     });
     elements.stage.addEventListener("wheel", () => {
       beginManualScroll();
@@ -934,6 +1012,7 @@
   bindEvents();
   applyState();
   renderDraftHistory();
+  loadDraftHistory();
   if (window.ResizeObserver) {
     let previousStageWidth = elements.stage.clientWidth;
     let previousLineHeight = getLayoutMetrics().lineHeight;
@@ -961,14 +1040,19 @@
       state = { ...state, ...event.detail.patch, focusMode: state.focusMode };
       applyState();
       const persistentState = { ...state, focusMode: false };
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState)); } catch {}
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState));
+        updateSaveStatus("本机已保存 · 云端已同步");
+      } catch { updateSaveStatus("本机保存失败，请导出文稿", true); }
       applyingRemoteState = false;
     });
     sync.addEventListener("state-conflict", (event) => {
       backupDraft("同步冲突", state.script);
       if (event.detail?.script && event.detail.script !== state.script) backupDraft("同步冲突", event.detail.script);
+      window.alert("检测到其他设备更新了文稿。你的版本已保存到“本机备份”，当前已显示房间最新版本。可从备份中恢复或导出比较。");
     });
     sync.addEventListener("remote-playback", (event) => applyRemotePlayback(event.detail));
+    sync.addEventListener("state-synced", () => updateSaveStatus(persistenceFailed ? "本机保存失败 · 云端已同步" : "本机已保存 · 云端已同步", persistenceFailed));
     sync.addEventListener("display-mode", () => {
       if (isInlineEditing) exitInlineEdit();
       closeAppearancePopover();

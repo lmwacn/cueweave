@@ -1,9 +1,9 @@
 (() => {
   "use strict";
 
-  const SESSION_KEY = "cueweave-sync-session-v3";
-  const RECENT_ROOMS_KEY = "cueweave-recent-rooms-v3";
-  const NAME_KEY = "cueweave-device-name-v3";
+  const SESSION_KEY = "cueweave-sync-session-v4";
+  const RECENT_ROOMS_KEY = "cueweave-recent-rooms-v4";
+  const NAME_KEY = "cueweave-device-name-v4";
   const $ = (id) => document.getElementById(id);
   const storageGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   const storageSet = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
@@ -21,16 +21,20 @@
       this.room = null;
       this.permissions = null;
       this.scriptRevision = null;
-      this.pendingMessages = [];
+      this.pendingConnectionCommand = null;
       this.pendingPatch = {};
       this.pendingPatchBaseScriptRevision = null;
       this.patchTimer = null;
       this.reconnectTimer = null;
+      this.leaveTimer = null;
       this.reconnectDelay = 1000;
       this.manualDisconnect = false;
       this.inviteRoomId = null;
       this.autoJoinRequested = false;
       this.inviteOrigin = null;
+      this.inviteToken = "";
+      this.inviteRole = "viewer";
+      this.inviteRequestId = 0;
       this.stateProvider = () => ({});
       this.playbackProvider = () => ({ playing: false, progress: 0, speed: 45 });
       this.bindUI();
@@ -100,6 +104,7 @@
       $("copyInviteButton").addEventListener("click", () => this.copyInvite());
       $("inviteModeSelect").addEventListener("change", () => this.updateInviteUI());
       $("roomModeSelect").addEventListener("change", (event) => this.send("room.mode", { mode: event.target.value }));
+      $("liveModeButton").addEventListener("click", () => this.setLiveMode());
       $("leaveRoomButton").addEventListener("click", () => this.leaveRoom());
       $("closeRoomButton").addEventListener("click", () => {
         if (window.confirm("关闭后所有设备会断开，当前房间无法恢复。确定关闭吗？")) this.send("room.close");
@@ -132,12 +137,19 @@
       const pathMatch = location.pathname.match(/^\/room\/([A-Z2-9]{6})\/?$/i);
       const roomId = (pathMatch?.[1] || params.get("room") || "").toUpperCase();
       const deviceMode = params.get("mode");
+      const inviteRole = params.get("role");
+      this.inviteToken = String(params.get("token") || "").slice(0, 120);
+      if (["viewer", "editor", "operator", "display"].includes(inviteRole)) this.inviteRole = inviteRole;
       if (roomId) $("roomCodeInput").value = roomId.slice(0, 6);
       if (["control", "editor", "director", "display"].includes(deviceMode)) $("deviceModeInput").value = deviceMode;
+      else if (this.inviteRole === "editor") $("deviceModeInput").value = "editor";
+      else if (this.inviteRole === "operator") $("deviceModeInput").value = "director";
+      else if (this.inviteRole === "display") $("deviceModeInput").value = "display";
       if (roomId) {
         this.inviteRoomId = roomId.slice(0, 6);
         this.autoJoinRequested = true;
         this.session = this.recentRoom(this.inviteRoomId);
+        if (this.inviteToken && this.session?.role !== "owner") this.session = null;
         if (this.session) {
           $("deviceNameInput").value = this.session.name || $("deviceNameInput").value;
           $("deviceModeInput").value = this.session.deviceMode || $("deviceModeInput").value;
@@ -188,23 +200,34 @@
         this.reconnectDelay = 1000;
         this.updateConnection("connected");
         if (resume && this.session?.roomId) {
-          this.send("room.join", this.session);
+          this.sendNow("room.join", this.session);
+        } else if (this.pendingConnectionCommand) {
+          const command = this.pendingConnectionCommand;
+          this.pendingConnectionCommand = null;
+          this.sendNow(command.type, command.payload);
         }
-        while (this.pendingMessages.length) this.ws.send(this.pendingMessages.shift());
       });
       this.ws.addEventListener("message", (event) => this.handleMessage(event.data));
       this.ws.addEventListener("close", (event) => this.handleClose(event));
       this.ws.addEventListener("error", () => this.updateConnection("error"));
     }
 
+    sendNow(type, payload = {}) {
+      if (this.ws?.readyState !== WebSocket.OPEN) return false;
+      this.ws.send(JSON.stringify({ type, payload, sentAt: Date.now() }));
+      return true;
+    }
+
     send(type, payload = {}) {
-      const encoded = JSON.stringify({ type, payload, sentAt: Date.now() });
-      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(encoded);
-      else {
-        this.pendingMessages.push(encoded);
-        if (this.pendingMessages.length > 100) this.pendingMessages.splice(0, this.pendingMessages.length - 100);
-        this.connect(Boolean(this.session?.roomId));
+      if (this.sendNow(type, payload)) return true;
+      if (type === "room.create" || type === "room.join") {
+        this.pendingConnectionCommand = { type, payload };
+        this.connect(false);
+      } else if (this.room) {
+        this.roomMessage("当前处于离线状态，本次操作未发送；连接恢复后请重试。", true);
+        this.connect(true);
       }
+      return false;
     }
 
     createRoom() {
@@ -233,7 +256,7 @@
         else this.connect(true);
         return;
       }
-      this.send("room.join", { roomId, name, deviceMode: $("deviceModeInput").value });
+      this.send("room.join", { roomId, name, deviceMode: $("deviceModeInput").value, inviteToken: this.inviteToken });
     }
 
     enterRecentRoom(roomId) {
@@ -317,7 +340,10 @@
       if (message.type === "room.snapshot") return this.applySnapshot(payload);
       if (message.type === "state.patch") {
         this.scriptRevision = Number(message.payload?.scriptRevision) || this.scriptRevision;
-        if (payload.sourceDeviceId === this.session?.deviceId) return;
+        if (payload.sourceDeviceId === this.session?.deviceId) {
+          this.dispatchEvent(new CustomEvent("state-synced", { detail: payload }));
+          return;
+        }
         this.dispatchEvent(new CustomEvent("remote-state", { detail: payload }));
         return;
       }
@@ -335,6 +361,13 @@
         this.renderRoom();
         return;
       }
+      if (message.type === "room.live") {
+        this.room = { ...this.room, liveLocked: Boolean(payload.liveLocked) };
+        this.applyPermissions();
+        this.renderRoom();
+        this.roomMessage(payload.message || "直播状态已更新");
+        return;
+      }
       if (message.type === "owner.changed") {
         this.roomMessage(payload.newOwnerId === this.session?.deviceId ? "原房主已离线，你已成为新房主。" : "房间控制权已移交。", false);
         return;
@@ -345,7 +378,10 @@
         this.setupMessage(payload.message || "房间已关闭", true);
         return;
       }
-      if (message.type === "room.left") return;
+      if (message.type === "room.left") {
+        this.finishLeave();
+        return;
+      }
       if (message.type === "error") {
         if (payload.code === "STATE_CONFLICT" && payload.rejectedPatch) {
           this.dispatchEvent(new CustomEvent("state-conflict", { detail: payload.rejectedPatch }));
@@ -373,10 +409,10 @@
       this.dispatchEvent(new CustomEvent("remote-playback", { detail: payload.playback }));
       this.applyPermissions();
       this.renderRoom();
+      $("syncDialogTitle").textContent = "房间管理";
       $("syncSetup").classList.add("hidden");
       $("syncRoom").classList.remove("hidden");
       this.updateConnection("connected");
-      this.updateInviteUI();
       this.flushStatePatch();
     }
 
@@ -384,16 +420,26 @@
       if (!this.room?.self || !this.permissions) return;
       document.body.dataset.deviceMode = this.room.self.deviceMode;
       document.body.dataset.roomRole = this.room.self.role;
+      const permissionBanner = $("permissionBanner");
+      let permissionText = {
+        viewer: "当前身份：查看者 · 仅接收同步内容，需要操作请联系房主授权",
+        editor: "当前身份：编辑者 · 可修改文稿和画面",
+        operator: "当前身份：导播 · 可控制播放、速度和进度"
+      }[this.room.self.role] || "";
+      if (this.room.liveLocked && permissionText) permissionText += " · 直播期间文稿与画面已锁定";
+      permissionBanner.textContent = permissionText;
+      permissionBanner.classList.toggle("hidden", !permissionText || this.room.self.deviceMode === "display");
       if (this.room.self.deviceMode === "display") {
         document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
         this.dispatchEvent(new CustomEvent("display-mode"));
       }
       const setDisabled = (ids, disabled) => ids.forEach((id) => { const element = $(id); if (element) element.disabled = disabled; });
-      setDisabled(["editorToggle", "inlineEditButton", "clearButton"], !this.permissions.editScript);
-      setDisabled(["importScriptButton"], !this.permissions.editScript);
-      $("draftHistorySelect").disabled = !this.permissions.editScript;
-      $("restoreDraftButton").disabled = !this.permissions.editScript || !$("draftHistorySelect").value;
-      setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "resetButton"], !this.permissions.editAppearance);
+      const editingLocked = Boolean(this.room.liveLocked);
+      setDisabled(["editorToggle", "inlineEditButton", "clearButton"], !this.permissions.editScript || editingLocked);
+      setDisabled(["importScriptButton"], !this.permissions.editScript || editingLocked);
+      $("draftHistorySelect").disabled = !this.permissions.editScript || editingLocked;
+      $("restoreDraftButton").disabled = !this.permissions.editScript || editingLocked || !$("draftHistorySelect").value;
+      setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "resetButton"], !this.permissions.editAppearance || editingLocked);
       setDisabled(["playButton", "speedDown", "speedUp", "scrollSpeed"], !this.permissions.controlPlayback);
       setDisabled(["backToTopButton"], !this.permissions.controlProgress);
       this.dispatchEvent(new CustomEvent("permissions", { detail: this.permissions }));
@@ -406,6 +452,12 @@
       const isOwner = Boolean(this.permissions?.manageRoom);
       $("ownerControls").classList.toggle("hidden", !isOwner);
       $("closeRoomButton").classList.toggle("hidden", !isOwner);
+      $("inviteModeSelect").disabled = !isOwner;
+      if (!isOwner) $("inviteModeSelect").value = "viewer";
+      $("liveModeButton").classList.toggle("hidden", !isOwner);
+      $("liveModeButton").textContent = this.room.liveLocked ? "结束直播并解锁" : "开始直播并锁定文稿";
+      $("liveModeButton").classList.toggle("is-live", Boolean(this.room.liveLocked));
+      $("liveStatus").classList.toggle("hidden", !this.room.liveLocked);
       const members = this.room.members || [];
       $("memberCount").textContent = `${members.filter((member) => member.connected).length} 台在线`;
       const list = $("memberList");
@@ -495,6 +547,15 @@
       this.send("playback.update", { action, ...playback });
     }
 
+    setLiveMode() {
+      if (!this.permissions?.manageRoom || !this.room) return;
+      const next = !this.room.liveLocked;
+      const message = next
+        ? "开始直播后，文稿和画面设置会锁定，播放控制仍可使用。确定开始吗？"
+        : "结束直播会暂停播放并重新开放文稿编辑。确定结束吗？";
+      if (window.confirm(message)) this.send("room.live", { liveLocked: next });
+    }
+
     updateConnection(status) {
       const labels = { offline: "多端同步", connecting: "连接中…", connected: "同步正常", error: "连接异常" };
       $("connectionLabel").textContent = labels[status];
@@ -558,13 +619,20 @@
       const url = new URL(await this.resolveInviteOrigin());
       url.pathname = `/room/${this.room.roomId}`;
       url.search = "";
-      url.searchParams.set("mode", $("inviteModeSelect").value);
+      const role = $("inviteModeSelect").value;
+      const modeByRole = { viewer: "control", editor: "editor", operator: "director", display: "display" };
+      url.searchParams.set("role", role);
+      url.searchParams.set("mode", modeByRole[role] || "control");
+      const inviteToken = this.room.inviteTokens?.[role];
+      if (inviteToken) url.searchParams.set("token", inviteToken);
       return url.toString();
     }
 
     async updateInviteUI() {
       if (!this.room) return;
+      const requestId = ++this.inviteRequestId;
       const invite = await this.buildInviteUrl();
+      if (requestId !== this.inviteRequestId || !this.room) return;
       $("inviteUrlInput").value = invite;
       $("inviteQrImage").src = `/api/qr?data=${encodeURIComponent(invite)}`;
       const inviteHost = new URL(invite).host;
@@ -593,7 +661,18 @@
 
     leaveRoom() {
       this.manualDisconnect = true;
-      if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify({ type: "room.leave", payload: {} }));
+      if (this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: "room.leave", payload: {} }));
+        clearTimeout(this.leaveTimer);
+        this.leaveTimer = setTimeout(() => this.finishLeave(), 800);
+        return;
+      }
+      this.finishLeave();
+    }
+
+    finishLeave() {
+      clearTimeout(this.leaveTimer);
+      this.leaveTimer = null;
       this.ws?.close(1000, "主动退出");
       this.clearLocalSession(true);
     }

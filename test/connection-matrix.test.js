@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
-import { readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { WebSocket } from "ws";
 
 async function freePort() {
@@ -75,7 +75,11 @@ class Client {
 async function createHarness(context, options = {}) {
   const port = await freePort();
   const dataFile = `/tmp/cueweave-matrix-${process.pid}-${port}.json`;
-  if (options.initialData) await writeFile(dataFile, JSON.stringify(options.initialData), "utf8");
+  const dataDir = `${dataFile}.rooms-v4`;
+  if (options.initialData) {
+    await mkdir(dataDir, { recursive: true });
+    await writeFile(`${dataDir}/ABCDEF.json`, JSON.stringify(options.initialData), "utf8");
+  }
   const child = spawn(process.execPath, ["server.js"], {
     cwd: process.cwd(),
     env: {
@@ -86,7 +90,7 @@ async function createHarness(context, options = {}) {
       EMPTY_ROOM_TTL_MS: String(options.emptyRoomTtlMs ?? 0),
       PERSIST_INTERVAL_MS: String(options.persistIntervalMs ?? 5_000),
       MAX_MEMBERS_PER_ROOM: String(options.maxMembersPerRoom ?? 50),
-      ROOM_DATA_FILE: dataFile
+      ROOM_DATA_DIR: dataDir
     },
     stdio: ["ignore", "pipe", "pipe"]
   });
@@ -99,6 +103,7 @@ async function createHarness(context, options = {}) {
   return {
     port,
     dataFile,
+    dataDir,
     child,
     async client() {
       const client = new Client(`ws://127.0.0.1:${port}/ws`);
@@ -120,8 +125,8 @@ async function createRoom(owner, mode = "restricted", deviceMode = "control") {
   return (await owner.next("room.created")).payload;
 }
 
-async function join(client, roomId, deviceMode, name = deviceMode) {
-  client.send("room.join", { roomId, name, deviceMode });
+async function join(client, roomId, deviceMode, name = deviceMode, inviteToken = "") {
+  client.send("room.join", { roomId, name, deviceMode, inviteToken });
   return (await client.next("room.joined")).payload;
 }
 
@@ -153,6 +158,18 @@ test("三种房间模式与四种设备用途执行正确权限矩阵", async (c
   assert.equal(editorPermissions.editScript, true);
   assert.equal(editorPermissions.editAppearance, true);
   assert.equal(editorPermissions.controlPlayback, false);
+
+  const invitedEditor = await harness.client();
+  const invitedEditorJoin = await join(invitedEditor, restrictedRoom.roomId, "editor", "受邀编辑", restrictedRoom.inviteTokens.editor);
+  assert.equal(invitedEditorJoin.self.role, "editor", "编辑邀请应直接授予与文案一致的权限");
+  assert.equal(invitedEditorJoin.permissions.editScript, true);
+
+  restrictedOwner.send("room.live", { liveLocked: true });
+  await editor.next("room.live", (message) => message.payload.liveLocked === true);
+  editor.send("state.patch", { patch: { script: "直播中误改" }, baseScriptRevision: editorJoin.scriptRevision });
+  assert.equal((await editor.next("error")).payload.code, "LIVE_LOCKED");
+  restrictedOwner.send("room.live", { liveLocked: false });
+  await editor.next("room.live", (message) => message.payload.liveLocked === false);
 
   const operator = await harness.client();
   const operatorJoin = await join(operator, restrictedRoom.roomId, "director");
@@ -345,20 +362,22 @@ test("文稿版本冲突、延迟持久化与离线设备移除均可控", async
   assert.equal(conflict.payload.rejectedPatch.script, "过期覆盖");
 
   const dirtyHealth = await (await fetch(`http://127.0.0.1:${harness.port}/health`)).json();
-  assert.equal(dirtyHealth.persistDirty, true, "普通编辑应等待持久化周期，而非立即落盘");
+  assert.ok(dirtyHealth.dirtyRooms > 0, "普通编辑应等待持久化周期，而非立即落盘");
 
   editor.close();
   await owner.next("members.updated", (message) => message.payload.members.some((member) => member.deviceId === joined.self.deviceId && !member.connected));
   owner.send("member.remove", { deviceId: joined.self.deviceId });
   const removed = await owner.next("members.updated", (message) => !message.payload.members.some((member) => member.deviceId === joined.self.deviceId));
   assert.equal(removed.payload.members.length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const persisted = JSON.parse(await readFile(`${harness.dataDir}/${room.roomId}.json`, "utf8"));
+  assert.equal(persisted.version, 4);
+  assert.equal(persisted.id, room.roomId);
+  assert.equal(persisted.state.script, "房主新版");
 });
 
-test("旧版房间快照会安全归档并以空的 v3 数据启动", async (context) => {
+test("不兼容的旧版房间快照会被忽略并以空的 v4 数据启动", async (context) => {
   const harness = await createHarness(context, { initialData: { version: 1, rooms: [{ id: "ABCDEF" }] } });
   const health = await (await fetch(`http://127.0.0.1:${harness.port}/health`)).json();
   assert.equal(health.rooms, 0);
-  const archivedPrefix = `${harness.dataFile.split("/").at(-1)}.legacy-`;
-  const archivedFiles = (await readdir("/tmp")).filter((name) => name.startsWith(archivedPrefix) && name.endsWith(".bak"));
-  assert.equal(archivedFiles.length, 1);
 });

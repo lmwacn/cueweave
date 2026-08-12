@@ -106,6 +106,7 @@
               <small id="inlineEditHint">双击文字可原位修改</small>
             </div>
             <div class="connection-banner" id="connectionBanner" role="status" aria-live="polite"></div>
+            <div class="permission-banner hidden" id="permissionBanner" role="status"></div>
             <div class="prompter-stage" id="prompterStage" tabindex="0" aria-label="提词内容，鼠标滚轮可手动滚动">
               <article class="prompt-content" id="promptContent" aria-label="提词文稿"></article>
               <div class="stage-empty" id="stageEmpty">
@@ -149,13 +150,18 @@
               <button id="speedUp" type="button" aria-label="提高速度">＋</button>
               <output for="scrollSpeed" id="scrollSpeedValue"></output>
             </div>
-            <div class="transport-actions">
+          <div class="transport-actions">
               <button id="backToTopButton" type="button" title="回到开头（R）">↥<span>回到开头</span></button>
               <span class="divider"></span>
               <button id="miniFocusButton" type="button" title="隐藏设置（F）">◧<span>隐藏设置</span></button>
             </div>
           </div>
-          <p class="shortcuts"><kbd>Space</kbd> 播放 / 暂停　 <kbd>↑</kbd><kbd>↓</kbd> 调速　 <kbd>R</kbd> 回到开头　 <kbd>F</kbd> 专注模式</p>
+          <button class="mobile-more-button" id="mobileMoreButton" type="button" aria-haspopup="menu" aria-expanded="false">•••</button>
+          <div class="mobile-transport-menu hidden" id="mobileTransportMenu" role="menu">
+            <button id="mobileBackToTopButton" type="button" role="menuitem">↥ 回到开头</button>
+            <button id="mobileFocusButton" type="button" role="menuitem">◧ 专注模式</button>
+          </div>
+          <p class="shortcuts"><kbd>Space</kbd> 播放 / 暂停　 <kbd>↑</kbd><kbd>↓</kbd> 调速　 <kbd>R</kbd> 回到开头　 <kbd>F</kbd> 专注模式　 <span id="screenAwakeStatus"></span></p>
         </section>
       </main>
 
@@ -223,12 +229,12 @@
             <button class="sync-step-back" id="syncSetupBack" type="button">← 返回选择</button>
             <div class="sync-step-heading"><b id="syncStepTitle">新建房间</b><p id="syncStepDescription">设置好当前设备后即可开始。</p></div>
             <label class="sync-field">设备名称<input id="deviceNameInput" maxlength="30" placeholder="例如：导播的 MacBook" /></label>
-            <label class="sync-field">当前设备用途
+            <label class="sync-field">当前设备界面
               <select id="deviceModeInput">
-                <option value="control">控制端 · 完整功能</option>
-                <option value="editor">编辑端 · 文稿为主</option>
-                <option value="director">导播端 · 播放控制</option>
-                <option value="display">显示端 · 只显示画面</option>
+                <option value="control">完整界面 · 权限由邀请或房主决定</option>
+                <option value="editor">编辑界面 · 文稿为主</option>
+                <option value="director">导播界面 · 播放为主</option>
+                <option value="display">显示界面 · 只显示画面</option>
               </select>
             </label>
             <div id="syncCreateFields">
@@ -254,16 +260,17 @@
             <div><small>当前房间</small><button class="room-code" id="currentRoomCode" type="button" title="复制邀请链接">——</button></div>
             <div class="room-connection"><span class="connection-dot" id="roomConnectionDot"></span><b id="roomConnectionText">连接中</b></div>
           </section>
+          <div class="live-status hidden" id="liveStatus" role="status">● 直播中 · 文稿与画面已锁定</div>
           <section class="invite-panel">
             <div class="invite-qr-wrap"><img id="inviteQrImage" alt="扫码加入当前房间" /></div>
             <div class="invite-copy">
               <div class="section-heading"><b>扫码或打开网址加入</b><span>无需填写房间码</span></div>
               <label class="sync-field">加入后的设备用途
                 <select id="inviteModeSelect">
-                  <option value="control">普通设备 · 按房间权限加入</option>
-                  <option value="display">显示设备 · 只显示提词画面</option>
-                  <option value="editor">编辑设备 · 文稿编辑界面</option>
-                  <option value="director">导播设备 · 播放控制界面</option>
+                  <option value="viewer">查看邀请 · 只查看内容</option>
+                  <option value="editor">编辑邀请 · 可修改文稿和画面</option>
+                  <option value="operator">导播邀请 · 可控制播放和进度</option>
+                  <option value="display">显示邀请 · 纯提词画面</option>
                 </select>
               </label>
               <div class="invite-url-row">
@@ -289,6 +296,7 @@
           <p class="sync-message" id="syncRoomMessage" role="status"></p>
           <div class="sync-room-actions">
             <button class="button ghost" id="leaveRoomButton" type="button">退出房间</button>
+            <button class="button primary hidden" id="liveModeButton" type="button">开始直播并锁定文稿</button>
             <button class="text-danger hidden" id="closeRoomButton" type="button">关闭并销毁房间</button>
           </div>
         </div>
