@@ -228,7 +228,7 @@
       }
       const setDisabled = (ids, disabled) => ids.forEach((id) => { const element = $(id); if (element) element.disabled = disabled; });
       setDisabled(["editorToggle", "inlineEditButton", "clearButton"], !this.permissions.editScript);
-      setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "mirrorHorizontal", "mirrorVertical", "resetButton"], !this.permissions.editAppearance);
+      setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "resetButton"], !this.permissions.editAppearance);
       setDisabled(["playButton", "speedDown", "speedUp", "scrollSpeed"], !this.permissions.controlPlayback);
       setDisabled(["backToTopButton"], !this.permissions.controlProgress);
       this.dispatchEvent(new CustomEvent("permissions", { detail: this.permissions }));

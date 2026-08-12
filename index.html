@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090b10" />
     <title>流光提词器</title>
-    <link rel="stylesheet" href="styles.css?v=20260812-12" />
+    <link rel="stylesheet" href="styles.css?v=20260812-13" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -84,6 +84,11 @@
                 <label>文字色 <span class="color-control"><input id="textColor" type="color" /><b id="textColorValue"></b></span></label>
                 <label>定位线 <span class="color-control"><input id="guideColor" type="color" /><b id="guideColorValue"></b></span></label>
               </div>
+              <label class="toggle-row mirror-follow-row">
+                <span><b>跟随房间镜像</b><small>关闭后仅调整本机画面</small></span>
+                <input id="followRoomMirror" type="checkbox" role="switch" />
+                <i></i>
+              </label>
               <div class="segmented" aria-label="镜像设置">
                 <button id="mirrorHorizontal" type="button" aria-pressed="false"><span>↔</span> 左右镜像</button>
                 <button id="mirrorVertical" type="button" aria-pressed="false"><span>↕</span> 上下镜像</button>
@@ -118,6 +123,11 @@
               </div>
             </div>
             <div class="mirror-badge" id="mirrorBadge">镜像已开启</div>
+            <div class="display-mirror-controls" id="displayMirrorControls" aria-label="本机镜像设置">
+              <button id="displayFollowMirror" type="button" aria-pressed="true">跟随</button>
+              <button id="displayMirrorHorizontal" type="button" aria-pressed="false">左右</button>
+              <button id="displayMirrorVertical" type="button" aria-pressed="false">上下</button>
+            </div>
           </div>
 
           <div class="transport" id="transport">
@@ -252,7 +262,7 @@
         </div>
       </dialog>
     </div>
-    <script src="sync-client.js?v=20260812-13"></script>
-    <script src="app.js?v=20260812-17"></script>
+    <script src="sync-client.js?v=20260812-14"></script>
+    <script src="app.js?v=20260812-18"></script>
   </body>
 </html>

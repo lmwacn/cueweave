@@ -2,6 +2,7 @@
   "use strict";
 
   const STORAGE_KEY = "liuguang-teleprompter-v1";
+  const LOCAL_VIEW_KEY = "liuguang-local-view-v1";
   const DEFAULT_SCRIPT = `大家好，欢迎来到今天的分享。\n\n这是一款专注、清晰，而且足够灵活的提词器。你可以在左侧随时修改文字，在下方控制滚动速度。\n\n开始之前，先调整字号、行间距和阅读宽度，让画面适合你的阅读习惯。\n\n准备好之后，按下空格键。把视线停留在横线上，文字会自然地经过你的阅读位置。\n\n愿每一次表达，都从容、准确、有力量。`;
   const defaults = {
     script: DEFAULT_SCRIPT,
@@ -29,12 +30,15 @@
     aidTitle: $("aidTitle"), aidValue: $("aidValue"), aidTip: $("aidTip"),
     stageWrap: $("stageWrap"), inlineEditButton: $("inlineEditButton"), inlineEditHint: $("inlineEditHint"),
     editorToggle: $("editorToggle"), editorDialog: $("editorDialog"), closeEditorButton: $("closeEditorButton"),
-    appearanceButton: $("appearanceButton"), appearancePopover: $("appearancePopover")
+    appearanceButton: $("appearanceButton"), appearancePopover: $("appearancePopover"),
+    followRoomMirror: $("followRoomMirror"), displayFollowMirror: $("displayFollowMirror"),
+    displayMirrorHorizontal: $("displayMirrorHorizontal"), displayMirrorVertical: $("displayMirrorVertical")
   };
 
   const controlIds = ["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "scrollSpeed"];
   const colorIds = ["backgroundColor", "textColor", "guideColor"];
   let state = loadState();
+  let localView = loadLocalView();
   let isPlaying = false;
   let lastFrameTime = 0;
   let animationFrame = null;
@@ -68,6 +72,23 @@
     } catch {
       return { ...defaults };
     }
+  }
+
+  function loadLocalView() {
+    try {
+      return {
+        followRoomMirror: true,
+        mirrorHorizontal: false,
+        mirrorVertical: false,
+        ...JSON.parse(localStorage.getItem(LOCAL_VIEW_KEY) || "{}")
+      };
+    } catch {
+      return { followRoomMirror: true, mirrorHorizontal: false, mirrorVertical: false };
+    }
+  }
+
+  function saveLocalView() {
+    localStorage.setItem(LOCAL_VIEW_KEY, JSON.stringify(localView));
   }
 
   function saveState(changedKeys = sharedStateKeys) {
@@ -107,8 +128,6 @@
     controlIds.forEach((id) => { $(id).value = state[id]; setRangeProgress($(id)); });
     colorIds.forEach((id) => { $(id).value = state[id]; });
     $("showGuide").checked = state.showGuide;
-    $("mirrorHorizontal").setAttribute("aria-pressed", String(state.mirrorHorizontal));
-    $("mirrorVertical").setAttribute("aria-pressed", String(state.mirrorVertical));
     document.documentElement.style.setProperty("--prompt-line-height", state.lineHeight);
     document.documentElement.style.setProperty("--prompt-width", `${state.contentWidth}%`);
     document.documentElement.style.setProperty("--stage-background", state.backgroundColor);
@@ -199,10 +218,50 @@
   }
 
   function updateMirror() {
-    const x = !isInlineEditing && state.mirrorHorizontal ? -1 : 1;
-    const y = !isInlineEditing && state.mirrorVertical ? -1 : 1;
+    const horizontal = localView.followRoomMirror ? state.mirrorHorizontal : localView.mirrorHorizontal;
+    const vertical = localView.followRoomMirror ? state.mirrorVertical : localView.mirrorVertical;
+    const x = !isInlineEditing && horizontal ? -1 : 1;
+    const y = !isInlineEditing && vertical ? -1 : 1;
     elements.promptContent.style.transform = `scale(${x}, ${y})`;
-    elements.mirrorBadge.classList.toggle("visible", !isInlineEditing && (state.mirrorHorizontal || state.mirrorVertical));
+    elements.mirrorBadge.textContent = localView.followRoomMirror ? "房间镜像已开启" : "本机镜像已开启";
+    elements.mirrorBadge.classList.toggle("visible", !isInlineEditing && (horizontal || vertical));
+    elements.followRoomMirror.checked = localView.followRoomMirror;
+    elements.displayFollowMirror.setAttribute("aria-pressed", String(localView.followRoomMirror));
+    [["mirrorHorizontal", "displayMirrorHorizontal", horizontal], ["mirrorVertical", "displayMirrorVertical", vertical]].forEach(([normalId, displayId, active]) => {
+      $(normalId).setAttribute("aria-pressed", String(active));
+      $(displayId).setAttribute("aria-pressed", String(active));
+    });
+    updateMirrorPermissions();
+  }
+
+  function updateMirrorPermissions() {
+    const disabled = localView.followRoomMirror && !hasPermission("editAppearance");
+    $("mirrorHorizontal").disabled = disabled;
+    $("mirrorVertical").disabled = disabled;
+    elements.displayMirrorHorizontal.disabled = disabled;
+    elements.displayMirrorVertical.disabled = disabled;
+  }
+
+  function setFollowRoomMirror(follow) {
+    if (!follow && localView.followRoomMirror) {
+      localView.mirrorHorizontal = state.mirrorHorizontal;
+      localView.mirrorVertical = state.mirrorVertical;
+    }
+    localView.followRoomMirror = follow;
+    saveLocalView();
+    updateMirror();
+  }
+
+  function toggleMirror(key) {
+    if (localView.followRoomMirror) {
+      if (!hasPermission("editAppearance")) return;
+      state[key] = !state[key];
+      saveState([key]);
+    } else {
+      localView[key] = !localView[key];
+      saveLocalView();
+    }
+    updateMirror();
   }
 
   function readInlineText() {
@@ -692,8 +751,10 @@
       });
     });
     $("showGuide").addEventListener("change", (event) => { state.showGuide = event.target.checked; applyState(); saveState(["showGuide"]); });
-    ["mirrorHorizontal", "mirrorVertical"].forEach((id) => {
-      $(id).addEventListener("click", () => { state[id] = !state[id]; applyState(); saveState([id]); });
+    elements.followRoomMirror.addEventListener("change", (event) => setFollowRoomMirror(event.target.checked));
+    elements.displayFollowMirror.addEventListener("click", () => setFollowRoomMirror(!localView.followRoomMirror));
+    [["mirrorHorizontal", "mirrorHorizontal"], ["mirrorVertical", "mirrorVertical"], ["displayMirrorHorizontal", "mirrorHorizontal"], ["displayMirrorVertical", "mirrorVertical"]].forEach(([id, key]) => {
+      $(id).addEventListener("click", () => toggleMirror(key));
     });
     elements.playButton.addEventListener("click", togglePlayback);
     $("speedDown").addEventListener("click", () => changeSpeed(-5));
@@ -804,5 +865,6 @@
       if (isInlineEditing) exitInlineEdit();
       closeAppearancePopover();
     });
+    sync.addEventListener("permissions", updateMirrorPermissions);
   }
 })();
