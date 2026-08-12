@@ -85,10 +85,14 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   const info = await (await fetch(`http://127.0.0.1:${port}/api/info`)).json();
   assert.equal(info.port, port);
   assert.ok(Array.isArray(info.origins));
-  const qrResponse = await fetch(`http://127.0.0.1:${port}/api/qr?data=${encodeURIComponent(`http://127.0.0.1:${port}/?room=ABCDEF&mode=display`)}`);
+  const qrResponse = await fetch(`http://127.0.0.1:${port}/api/qr?data=${encodeURIComponent(`http://127.0.0.1:${port}/room/ABCDEF?mode=display`)}`);
   assert.equal(qrResponse.status, 200);
   assert.match(qrResponse.headers.get("content-type"), /image\/svg\+xml/);
   assert.match(await qrResponse.text(), /<svg/);
+  const roomRoute = await fetch(`http://127.0.0.1:${port}/room/ABCDEF`);
+  assert.equal(roomRoute.status, 200);
+  assert.match(roomRoute.headers.get("content-type"), /text\/html/);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/room/INVALID`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/server.js`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/data/rooms.json`)).status, 404);
 

@@ -2,6 +2,7 @@
   "use strict";
 
   const SESSION_KEY = "cueweave-sync-session-v1";
+  const RECENT_ROOMS_KEY = "cueweave-recent-rooms-v1";
   const NAME_KEY = "cueweave-device-name-v1";
   const LEGACY_SESSION_KEY = "liuguang-sync-session-v1";
   const LEGACY_NAME_KEY = "liuguang-device-name-v1";
@@ -13,7 +14,9 @@
     constructor() {
       super();
       this.ws = null;
-      this.session = this.loadSession();
+      const previousSession = this.loadSession();
+      this.recentRooms = this.loadRecentRooms(previousSession);
+      this.session = null;
       this.room = null;
       this.permissions = null;
       this.pendingMessages = [];
@@ -42,12 +45,38 @@
       catch { return null; }
     }
 
+    loadRecentRooms(previousSession) {
+      let rooms = [];
+      try {
+        const stored = JSON.parse(localStorage.getItem(RECENT_ROOMS_KEY) || "[]");
+        if (Array.isArray(stored)) rooms = stored;
+      } catch {}
+      if (previousSession?.roomId && !rooms.some((room) => room.roomId === previousSession.roomId)) {
+        rooms.unshift({ ...previousSession, lastVisitedAt: Date.now() });
+      }
+      return rooms
+        .filter((room) => /^[A-Z2-9]{6}$/.test(String(room?.roomId || "")) && room.deviceId && room.reconnectToken)
+        .sort((a, b) => Number(b.lastVisitedAt || 0) - Number(a.lastVisitedAt || 0))
+        .slice(0, 20);
+    }
+
+    saveRecentRooms() {
+      localStorage.setItem(RECENT_ROOMS_KEY, JSON.stringify(this.recentRooms));
+    }
+
+    recentRoom(roomId) {
+      return this.recentRooms.find((room) => room.roomId === roomId) || null;
+    }
+
     persistSession(data) {
-      this.session = data;
-      localStorage.setItem(SESSION_KEY, JSON.stringify(data));
+      this.session = { ...data, lastVisitedAt: Date.now() };
+      this.recentRooms = [this.session, ...this.recentRooms.filter((room) => room.roomId !== data.roomId)].slice(0, 20);
+      localStorage.setItem(SESSION_KEY, JSON.stringify(this.session));
+      this.saveRecentRooms();
       localStorage.setItem(NAME_KEY, data.name);
       localStorage.removeItem(LEGACY_SESSION_KEY);
       localStorage.removeItem(LEGACY_NAME_KEY);
+      this.renderRecentRooms();
     }
 
     bindUI() {
@@ -68,23 +97,27 @@
       $("closeRoomButton").addEventListener("click", () => {
         if (window.confirm("关闭后所有设备会断开，当前房间无法恢复。确定关闭吗？")) this.send("room.close");
       });
+      this.renderRecentRooms();
     }
 
     prepareFromUrl() {
       const params = new URLSearchParams(location.search);
-      const roomId = (params.get("room") || "").toUpperCase();
+      const pathMatch = location.pathname.match(/^\/room\/([A-Z2-9]{6})\/?$/i);
+      const roomId = (pathMatch?.[1] || params.get("room") || "").toUpperCase();
       const deviceMode = params.get("mode");
       if (roomId) $("roomCodeInput").value = roomId.slice(0, 6);
       if (["control", "editor", "director", "display"].includes(deviceMode)) $("deviceModeInput").value = deviceMode;
       if (roomId) {
         this.inviteRoomId = roomId.slice(0, 6);
         this.autoJoinRequested = true;
-        if (this.session?.roomId && this.session.roomId !== this.inviteRoomId) {
-          localStorage.removeItem(SESSION_KEY);
-          localStorage.removeItem(LEGACY_SESSION_KEY);
-          this.session = null;
+        this.session = this.recentRoom(this.inviteRoomId);
+        if (this.session) {
+          $("deviceNameInput").value = this.session.name || $("deviceNameInput").value;
+          $("deviceModeInput").value = this.session.deviceMode || $("deviceModeInput").value;
         }
         if (!this.session) requestAnimationFrame(() => $("syncDialog").showModal());
+      } else if (location.protocol !== "file:") {
+        requestAnimationFrame(() => $("syncDialog").showModal());
       }
     }
 
@@ -159,7 +192,71 @@
       if (roomId.length !== 6) return this.setupMessage("请输入正确的 6 位房间码。", true);
       const name = $("deviceNameInput").value.trim() || this.defaultDeviceName();
       this.setupMessage(automatic ? "正在通过邀请链接自动加入…" : "正在加入房间…");
+      const recent = this.recentRoom(roomId);
+      if (recent) {
+        this.session = { ...recent, name };
+        if (this.ws?.readyState === WebSocket.OPEN) this.send("room.join", this.session);
+        else this.connect(true);
+        return;
+      }
       this.send("room.join", { roomId, name, deviceMode: $("deviceModeInput").value });
+    }
+
+    enterRecentRoom(roomId) {
+      const recent = this.recentRoom(roomId);
+      if (!recent) return;
+      this.inviteRoomId = roomId;
+      $("roomCodeInput").value = roomId;
+      $("deviceNameInput").value = recent.name || $("deviceNameInput").value;
+      $("deviceModeInput").value = recent.deviceMode || "control";
+      this.joinRoom();
+    }
+
+    forgetRecentRoom(roomId) {
+      this.recentRooms = this.recentRooms.filter((room) => room.roomId !== roomId);
+      this.saveRecentRooms();
+      if (this.session?.roomId === roomId && !this.room) {
+        this.session = null;
+        localStorage.removeItem(SESSION_KEY);
+      }
+      this.renderRecentRooms();
+    }
+
+    renderRecentRooms() {
+      const section = $("recentRoomsSection");
+      const list = $("recentRoomList");
+      if (!section || !list) return;
+      section.classList.toggle("hidden", !this.recentRooms.length);
+      list.replaceChildren();
+      this.recentRooms.forEach((room) => {
+        const row = document.createElement("div");
+        row.className = "recent-room";
+        const copy = document.createElement("div");
+        copy.className = "recent-room-copy";
+        const code = document.createElement("b");
+        code.textContent = room.roomId;
+        const detail = document.createElement("small");
+        const role = roleLabels[room.role] || "成员";
+        const mode = modeLabels[room.deviceMode] || "控制端";
+        const visited = room.lastVisitedAt ? new Date(room.lastVisitedAt).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "时间未知";
+        detail.textContent = `${role} · ${mode} · ${visited}`;
+        copy.append(code, detail);
+        const actions = document.createElement("div");
+        actions.className = "recent-room-actions";
+        const enter = document.createElement("button");
+        enter.type = "button";
+        enter.textContent = "进入";
+        enter.addEventListener("click", () => this.enterRecentRoom(room.roomId));
+        const forget = document.createElement("button");
+        forget.type = "button";
+        forget.textContent = "×";
+        forget.title = "仅从当前浏览器移除记录";
+        forget.setAttribute("aria-label", `移除房间 ${room.roomId} 记录`);
+        forget.addEventListener("click", () => this.forgetRecentRoom(room.roomId));
+        actions.append(enter, forget);
+        row.append(copy, actions);
+        list.append(row);
+      });
     }
 
     handleMessage(raw) {
@@ -172,13 +269,15 @@
           deviceId: payload.self.deviceId,
           reconnectToken: payload.reconnectToken,
           name: payload.self.name,
-          deviceMode: payload.self.deviceMode
+          deviceMode: payload.self.deviceMode,
+          role: payload.self.role,
+          roomMode: payload.mode
         });
         this.applySnapshot(payload);
         this.setupMessage("");
         if (this.autoJoinRequested && $("syncDialog").open) $("syncDialog").close();
         this.autoJoinRequested = false;
-        this.removeInviteQuery();
+        this.setRoomUrl(payload.roomId);
         return;
       }
       if (message.type === "room.snapshot") return this.applySnapshot(payload);
@@ -202,13 +301,18 @@
         return;
       }
       if (message.type === "room.closed") {
+        if (this.session?.roomId) this.forgetRecentRoom(this.session.roomId);
         this.clearLocalSession(true);
         this.setupMessage(payload.message || "房间已关闭", true);
         return;
       }
       if (message.type === "error") {
         if (payload.snapshot) this.applySnapshot(payload.snapshot);
-        if (payload.code === "ROOM_NOT_FOUND") this.clearLocalSession(true);
+        if (payload.code === "ROOM_NOT_FOUND") {
+          const missingRoomId = this.session?.roomId || this.inviteRoomId;
+          if (missingRoomId) this.forgetRecentRoom(missingRoomId);
+          this.clearLocalSession(true);
+        }
         const inRoom = Boolean(this.room);
         (inRoom ? this.roomMessage.bind(this) : this.setupMessage.bind(this))(payload.message || "同步操作失败", true);
       }
@@ -356,9 +460,8 @@
     async buildInviteUrl() {
       if (!this.room) return "";
       const url = new URL(await this.resolveInviteOrigin());
-      url.pathname = "/";
+      url.pathname = `/room/${this.room.roomId}`;
       url.search = "";
-      url.searchParams.set("room", this.room.roomId);
       url.searchParams.set("mode", $("inviteModeSelect").value);
       return url.toString();
     }
@@ -380,12 +483,16 @@
       );
     }
 
-    removeInviteQuery() {
+    setRoomUrl(roomId) {
       if (!history.replaceState) return;
       const url = new URL(location.href);
-      url.searchParams.delete("room");
-      url.searchParams.delete("mode");
-      history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+      url.pathname = `/room/${roomId}`;
+      url.search = "";
+      history.replaceState(null, "", `${url.pathname}${url.hash}`);
+    }
+
+    setEntryUrl() {
+      if (history.replaceState) history.replaceState(null, "", "/");
     }
 
     leaveRoom() {
@@ -400,6 +507,9 @@
       this.session = null;
       this.room = null;
       this.permissions = null;
+      this.inviteRoomId = null;
+      this.autoJoinRequested = false;
+      this.setEntryUrl();
       document.body.dataset.deviceMode = "control";
       document.body.dataset.roomRole = "";
       ["editorToggle", "inlineEditButton", "clearButton", "fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "mirrorHorizontal", "mirrorVertical", "resetButton", "playButton", "speedDown", "speedUp", "scrollSpeed", "backToTopButton"].forEach((id) => {
@@ -409,6 +519,8 @@
       if (showSetup) {
         $("syncRoom").classList.add("hidden");
         $("syncSetup").classList.remove("hidden");
+        this.renderRecentRooms();
+        if (!$("syncDialog").open) $("syncDialog").showModal();
       }
       this.updateConnection("offline");
     }

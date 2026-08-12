@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090b10" />
     <title>CueWeave · 流光提词器</title>
-    <link rel="stylesheet" href="styles.css?v=20260812-14" />
+    <link rel="stylesheet" href="/styles.css?v=20260812-15" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -190,6 +190,10 @@
             <span class="sync-hero-mark">⌁</span>
             <div><b>让手机、平板和电脑保持同一进度</b><p id="syncSupportText">创建房间后，其他设备使用房间码加入。</p></div>
           </div>
+          <section class="recent-rooms hidden" id="recentRoomsSection" aria-labelledby="recentRoomsTitle">
+            <div class="section-heading"><b id="recentRoomsTitle">最近房间</b><span>保存在当前浏览器</span></div>
+            <div class="recent-room-list" id="recentRoomList"></div>
+          </section>
           <label class="sync-field">设备名称<input id="deviceNameInput" maxlength="30" placeholder="例如：导播的 MacBook" /></label>
           <label class="sync-field">当前设备用途
             <select id="deviceModeInput">
@@ -262,7 +266,7 @@
         </div>
       </dialog>
     </div>
-    <script src="sync-client.js?v=20260812-15"></script>
-    <script src="app.js?v=20260812-19"></script>
+    <script src="/sync-client.js?v=20260812-16"></script>
+    <script src="/app.js?v=20260812-19"></script>
   </body>
 </html>

@@ -210,6 +210,19 @@ input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; } input[type="co
 .sync-hero-mark { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; color: #1d0e09; background: var(--accent); font-size: 23px; font-weight: 800; }
 .sync-intro b { color: #e1e4e9; font-size: 13px; }
 .sync-intro p { margin: 5px 0 0; color: #777f8e; font-size: 11px; line-height: 1.5; }
+.recent-rooms { margin: 0 0 18px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: #0d1016; }
+.recent-rooms .section-heading { align-items: center; margin-bottom: 10px; }
+.recent-rooms .section-heading b { color: #d4d8e0; font-size: 12px; }
+.recent-rooms .section-heading span { color: #626a79; font-size: 9px; }
+.recent-room-list { display: grid; gap: 8px; }
+.recent-room { min-width: 0; padding: 10px 11px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid rgba(255,255,255,.07); border-radius: 8px; background: #121620; }
+.recent-room-copy { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.recent-room-copy b { color: #e4e7ec; font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .12em; }
+.recent-room-copy small { overflow: hidden; color: #727a89; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.recent-room-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.recent-room-actions button { height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: #171b24; color: #aeb4c0; font-size: 10px; cursor: pointer; }
+.recent-room-actions button:first-child { border-color: rgba(255,116,82,.3); color: var(--accent-2); }
+.recent-room-actions button:last-child { width: 30px; padding: 0; color: #666e7c; }
 .sync-field { display: grid; gap: 7px; margin-bottom: 14px; color: #9299a7; font-size: 11px; }
 .sync-field input, .sync-field select, .join-row input, .owner-controls select, .member-controls select { height: 40px; padding: 0 11px; border: 1px solid var(--line); border-radius: 8px; outline: 0; color: #d9dde4; background: #0c0f15; font: inherit; }
 .sync-field input:focus, .sync-field select:focus, .join-row input:focus { border-color: rgba(255,116,82,.45); box-shadow: 0 0 0 3px rgba(255,116,82,.06); }
@@ -287,6 +300,8 @@ body[data-device-mode="display"] .display-mirror-controls:focus-within { opacity
   .sync-open-button #connectionLabel { display: none; }
   .sync-dialog { width: calc(100vw - 20px); max-height: calc(100vh - 20px); }
   .sync-setup, .sync-room { padding: 14px; }
+  .recent-room { align-items: flex-start; }
+  .recent-room-actions button:first-child { padding: 0 8px; }
   .sync-create-block { grid-template-columns: 1fr; }
   .member-row { align-items: flex-start; flex-direction: column; }
   .member-controls { width: 100%; }

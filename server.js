@@ -552,7 +552,7 @@ const httpServer = createServer(async (request, response) => {
       response.end(svg);
       return;
     }
-    if (pathname === "/") pathname = "/index.html";
+    if (pathname === "/" || /^\/room\/[A-Z2-9]{6}\/?$/i.test(pathname)) pathname = "/index.html";
     if (!publicFiles.has(pathname)) throw Object.assign(new Error("Not found"), { statusCode: 404 });
     const filePath = resolve(ROOT, `.${normalize(pathname)}`);
     if (!filePath.startsWith(`${ROOT}${sep}`)) throw Object.assign(new Error("Forbidden"), { statusCode: 403 });
