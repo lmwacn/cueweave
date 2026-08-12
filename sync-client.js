@@ -82,9 +82,15 @@
     bindUI() {
       const defaultName = localStorage.getItem(NAME_KEY) || localStorage.getItem(LEGACY_NAME_KEY) || this.defaultDeviceName();
       $("deviceNameInput").value = defaultName;
-      $("syncToggle").addEventListener("click", () => $("syncDialog").showModal());
+      $("syncToggle").addEventListener("click", () => {
+        if (!this.room) this.showSetupStep("choice");
+        $("syncDialog").showModal();
+      });
       $("closeSyncButton").addEventListener("click", () => $("syncDialog").close());
       $("syncDialog").addEventListener("click", (event) => { if (event.target === $("syncDialog")) $("syncDialog").close(); });
+      $("createRoomChoice").addEventListener("click", () => this.showSetupStep("create"));
+      $("joinRoomChoice").addEventListener("click", () => this.showSetupStep("join"));
+      $("syncSetupBack").addEventListener("click", () => this.showSetupStep("choice"));
       $("createRoomButton").addEventListener("click", () => this.createRoom());
       $("joinRoomButton").addEventListener("click", () => this.joinRoom());
       $("roomCodeInput").addEventListener("input", (event) => { event.target.value = event.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ""); });
@@ -98,6 +104,26 @@
         if (window.confirm("关闭后所有设备会断开，当前房间无法恢复。确定关闭吗？")) this.send("room.close");
       });
       this.renderRecentRooms();
+    }
+
+    showSetupStep(step) {
+      const choice = step === "choice";
+      $("syncChoice").classList.toggle("hidden", !choice);
+      $("syncFormStep").classList.toggle("hidden", choice);
+      if (choice) {
+        $("syncDialogTitle").textContent = "多端同步";
+        this.setupMessage("");
+        this.renderRecentRooms();
+        return;
+      }
+      const joining = step === "join";
+      $("syncCreateFields").classList.toggle("hidden", joining);
+      $("syncJoinFields").classList.toggle("hidden", !joining);
+      $("syncDialogTitle").textContent = joining ? "加入房间" : "新建房间";
+      $("syncStepTitle").textContent = joining ? "加入已有房间" : "创建新的同步房间";
+      $("syncStepDescription").textContent = joining ? "输入房间号，即可与其他设备同步。" : "你将成为房主，并可以邀请其他设备。";
+      this.setupMessage("");
+      requestAnimationFrame(() => (joining ? $("roomCodeInput") : $("deviceNameInput")).focus());
     }
 
     prepareFromUrl() {
@@ -115,9 +141,15 @@
           $("deviceNameInput").value = this.session.name || $("deviceNameInput").value;
           $("deviceModeInput").value = this.session.deviceMode || $("deviceModeInput").value;
         }
-        if (!this.session) requestAnimationFrame(() => $("syncDialog").showModal());
+        if (!this.session) requestAnimationFrame(() => {
+          this.showSetupStep("join");
+          $("syncDialog").showModal();
+        });
       } else if (location.protocol !== "file:") {
-        requestAnimationFrame(() => $("syncDialog").showModal());
+        requestAnimationFrame(() => {
+          this.showSetupStep("choice");
+          $("syncDialog").showModal();
+        });
       }
     }
 
@@ -312,6 +344,8 @@
           const missingRoomId = this.session?.roomId || this.inviteRoomId;
           if (missingRoomId) this.forgetRecentRoom(missingRoomId);
           this.clearLocalSession(true);
+          this.showSetupStep("join");
+          if (missingRoomId) $("roomCodeInput").value = missingRoomId;
         }
         const inRoom = Boolean(this.room);
         (inRoom ? this.roomMessage.bind(this) : this.setupMessage.bind(this))(payload.message || "同步操作失败", true);
@@ -519,7 +553,7 @@
       if (showSetup) {
         $("syncRoom").classList.add("hidden");
         $("syncSetup").classList.remove("hidden");
-        this.renderRecentRooms();
+        this.showSetupStep("choice");
         if (!$("syncDialog").open) $("syncDialog").showModal();
       }
       this.updateConnection("offline");

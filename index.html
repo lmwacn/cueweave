@@ -186,39 +186,53 @@
         </div>
 
         <div class="sync-setup" id="syncSetup">
-          <div class="sync-intro">
-            <span class="sync-hero-mark">⌁</span>
-            <div><b>让手机、平板和电脑保持同一进度</b><p id="syncSupportText">创建房间后，其他设备使用房间码加入。</p></div>
+          <div class="sync-choice" id="syncChoice">
+            <div class="sync-choice-copy">
+              <b>你想如何开始？</b>
+              <p>创建一个新的同步房间，或者加入别人的房间。</p>
+            </div>
+            <div class="sync-choice-actions">
+              <button class="sync-choice-card primary-choice" id="createRoomChoice" type="button">
+                <span class="choice-icon">＋</span><b>新建房间</b><small>成为房主，邀请其他设备加入</small><i>→</i>
+              </button>
+              <button class="sync-choice-card" id="joinRoomChoice" type="button">
+                <span class="choice-icon">→</span><b>加入房间</b><small>输入 6 位房间码加入</small><i>→</i>
+              </button>
+            </div>
+            <section class="recent-rooms hidden" id="recentRoomsSection" aria-labelledby="recentRoomsTitle">
+              <div class="section-heading"><b id="recentRoomsTitle">最近房间</b><span>保存在当前浏览器</span></div>
+              <div class="recent-room-list" id="recentRoomList"></div>
+            </section>
           </div>
-          <section class="recent-rooms hidden" id="recentRoomsSection" aria-labelledby="recentRoomsTitle">
-            <div class="section-heading"><b id="recentRoomsTitle">最近房间</b><span>保存在当前浏览器</span></div>
-            <div class="recent-room-list" id="recentRoomList"></div>
-          </section>
-          <label class="sync-field">设备名称<input id="deviceNameInput" maxlength="30" placeholder="例如：导播的 MacBook" /></label>
-          <label class="sync-field">当前设备用途
-            <select id="deviceModeInput">
-              <option value="control">控制端 · 完整功能</option>
-              <option value="editor">编辑端 · 文稿为主</option>
-              <option value="director">导播端 · 播放控制</option>
-              <option value="display">显示端 · 只显示画面</option>
-            </select>
-          </label>
-          <div class="sync-create-block">
-            <label class="sync-field">新房间模式
-              <select id="newRoomModeInput">
-                <option value="restricted">权限协作 · 房主分配权限</option>
-                <option value="open">自由协作 · 所有人可操作</option>
-                <option value="director">导播模式 · 严格按角色控制</option>
+
+          <div class="sync-form-step hidden" id="syncFormStep">
+            <button class="sync-step-back" id="syncSetupBack" type="button">← 返回选择</button>
+            <div class="sync-step-heading"><b id="syncStepTitle">新建房间</b><p id="syncStepDescription">设置好当前设备后即可开始。</p></div>
+            <label class="sync-field">设备名称<input id="deviceNameInput" maxlength="30" placeholder="例如：导播的 MacBook" /></label>
+            <label class="sync-field">当前设备用途
+              <select id="deviceModeInput">
+                <option value="control">控制端 · 完整功能</option>
+                <option value="editor">编辑端 · 文稿为主</option>
+                <option value="director">导播端 · 播放控制</option>
+                <option value="display">显示端 · 只显示画面</option>
               </select>
             </label>
-            <button class="button primary sync-main-action" id="createRoomButton" type="button">创建同步房间</button>
+            <div id="syncCreateFields">
+              <label class="sync-field">新房间模式
+                <select id="newRoomModeInput">
+                  <option value="restricted">权限协作 · 房主分配权限</option>
+                  <option value="open">自由协作 · 所有人可操作</option>
+                  <option value="director">导播模式 · 严格按角色控制</option>
+                </select>
+              </label>
+              <button class="button primary sync-step-submit" id="createRoomButton" type="button">创建同步房间</button>
+            </div>
+            <div class="hidden" id="syncJoinFields">
+              <label class="sync-field">房间号<input id="roomCodeInput" maxlength="6" autocomplete="off" inputmode="text" placeholder="输入 6 位房间码" /></label>
+              <button class="button primary sync-step-submit" id="joinRoomButton" type="button">加入房间</button>
+            </div>
+            <p class="sync-message" id="syncSetupMessage" role="status"></p>
           </div>
-          <div class="sync-divider"><span>或者加入已有房间</span></div>
-          <div class="join-row">
-            <input id="roomCodeInput" maxlength="6" autocomplete="off" placeholder="输入 6 位房间码" />
-            <button class="button ghost" id="joinRoomButton" type="button">加入房间</button>
-          </div>
-          <p class="sync-message" id="syncSetupMessage" role="status"></p>
         </div>
 
         <div class="sync-room hidden" id="syncRoom">
@@ -266,7 +280,7 @@
         </div>
       </dialog>
     </div>
-    <script src="/sync-client.js?v=20260812-16"></script>
+    <script src="/sync-client.js?v=20260812-17"></script>
     <script src="/app.js?v=20260812-20"></script>
   </body>
 </html>
