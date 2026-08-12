@@ -74,7 +74,7 @@ class TestClient {
 
 test("多设备房间支持权限控制、状态同步和播放同步", async (context) => {
   const port = await freePort();
-  const dataFile = `/tmp/liuguang-test-${process.pid}-${port}.json`;
+  const dataFile = `/tmp/cueweave-test-${process.pid}-${port}.json`;
   let processHandle = spawn(process.execPath, ["server.js"], {
     cwd: process.cwd(),
     env: { ...process.env, HOST: "127.0.0.1", PORT: String(port), OWNER_GRACE_MS: "200", ROOM_DATA_FILE: dataFile },

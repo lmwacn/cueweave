@@ -1,8 +1,10 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "liuguang-teleprompter-v1";
-  const LOCAL_VIEW_KEY = "liuguang-local-view-v1";
+  const STORAGE_KEY = "cueweave-teleprompter-v1";
+  const LOCAL_VIEW_KEY = "cueweave-local-view-v1";
+  const LEGACY_STORAGE_KEY = "liuguang-teleprompter-v1";
+  const LEGACY_LOCAL_VIEW_KEY = "liuguang-local-view-v1";
   const DEFAULT_SCRIPT = `大家好，欢迎来到今天的分享。\n\n这是一款专注、清晰，而且足够灵活的提词器。你可以在左侧随时修改文字，在下方控制滚动速度。\n\n开始之前，先调整字号、行间距和阅读宽度，让画面适合你的阅读习惯。\n\n准备好之后，按下空格键。把视线停留在横线上，文字会自然地经过你的阅读位置。\n\n愿每一次表达，都从容、准确、有力量。`;
   const defaults = {
     script: DEFAULT_SCRIPT,
@@ -64,7 +66,9 @@
 
   function loadState() {
     try {
-      const loaded = { ...defaults, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"), focusMode: false };
+      const stored = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY) || "{}";
+      const loaded = { ...defaults, ...JSON.parse(stored), focusMode: false };
+      if (!localStorage.getItem(STORAGE_KEY) && stored !== "{}") localStorage.setItem(STORAGE_KEY, stored);
       delete loaded.innerPadding;
       delete loaded.outerMargin;
       delete loaded.editorCollapsed;
@@ -80,7 +84,7 @@
         followRoomMirror: true,
         mirrorHorizontal: false,
         mirrorVertical: false,
-        ...JSON.parse(localStorage.getItem(LOCAL_VIEW_KEY) || "{}")
+        ...JSON.parse(localStorage.getItem(LOCAL_VIEW_KEY) || localStorage.getItem(LEGACY_LOCAL_VIEW_KEY) || "{}")
       };
     } catch {
       return { followRoomMirror: true, mirrorHorizontal: false, mirrorVertical: false };

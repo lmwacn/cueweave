@@ -1,5 +1,5 @@
 {
-  "name": "liuguang-teleprompter",
+  "name": "cueweave-teleprompter",
   "version": "2.0.0",
   "private": true,
   "description": "支持多设备实时同步的流光提词器",

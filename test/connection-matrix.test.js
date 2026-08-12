@@ -73,7 +73,7 @@ class Client {
 
 async function createHarness(context, options = {}) {
   const port = await freePort();
-  const dataFile = `/tmp/liuguang-matrix-${process.pid}-${port}.json`;
+  const dataFile = `/tmp/cueweave-matrix-${process.pid}-${port}.json`;
   const child = spawn(process.execPath, ["server.js"], {
     cwd: process.cwd(),
     env: {

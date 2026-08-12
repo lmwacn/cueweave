@@ -580,7 +580,7 @@ wss.on("connection", (ws) => {
   ws.on("message", (raw) => handleMessage(ws, raw));
   ws.on("close", () => handleDisconnect(ws));
   ws.on("error", () => handleDisconnect(ws));
-  send(ws, "hello", { message: "流光提词器同步服务已连接" });
+  send(ws, "hello", { message: "CueWeave 同步服务已连接" });
 });
 
 const heartbeat = setInterval(() => {
@@ -594,7 +594,7 @@ const heartbeat = setInterval(() => {
 await loadRooms();
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`流光提词器已启动：http://localhost:${PORT}`);
+  console.log(`CueWeave 已启动：http://localhost:${PORT}`);
   console.log(`局域网设备请访问：http://<本机局域网IP>:${PORT}`);
 });
 

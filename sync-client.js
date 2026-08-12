@@ -1,8 +1,10 @@
 (() => {
   "use strict";
 
-  const SESSION_KEY = "liuguang-sync-session-v1";
-  const NAME_KEY = "liuguang-device-name-v1";
+  const SESSION_KEY = "cueweave-sync-session-v1";
+  const NAME_KEY = "cueweave-device-name-v1";
+  const LEGACY_SESSION_KEY = "liuguang-sync-session-v1";
+  const LEGACY_NAME_KEY = "liuguang-device-name-v1";
   const $ = (id) => document.getElementById(id);
   const roleLabels = { owner: "房主", editor: "编辑者", operator: "操作者", viewer: "查看者" };
   const modeLabels = { control: "控制端", editor: "编辑端", director: "导播端", display: "显示端" };
@@ -32,7 +34,11 @@
     }
 
     loadSession() {
-      try { return JSON.parse(localStorage.getItem(SESSION_KEY) || "null"); }
+      try {
+        const stored = localStorage.getItem(SESSION_KEY) || localStorage.getItem(LEGACY_SESSION_KEY) || "null";
+        if (!localStorage.getItem(SESSION_KEY) && stored !== "null") localStorage.setItem(SESSION_KEY, stored);
+        return JSON.parse(stored);
+      }
       catch { return null; }
     }
 
@@ -40,10 +46,12 @@
       this.session = data;
       localStorage.setItem(SESSION_KEY, JSON.stringify(data));
       localStorage.setItem(NAME_KEY, data.name);
+      localStorage.removeItem(LEGACY_SESSION_KEY);
+      localStorage.removeItem(LEGACY_NAME_KEY);
     }
 
     bindUI() {
-      const defaultName = localStorage.getItem(NAME_KEY) || this.defaultDeviceName();
+      const defaultName = localStorage.getItem(NAME_KEY) || localStorage.getItem(LEGACY_NAME_KEY) || this.defaultDeviceName();
       $("deviceNameInput").value = defaultName;
       $("syncToggle").addEventListener("click", () => $("syncDialog").showModal());
       $("closeSyncButton").addEventListener("click", () => $("syncDialog").close());
@@ -73,6 +81,7 @@
         this.autoJoinRequested = true;
         if (this.session?.roomId && this.session.roomId !== this.inviteRoomId) {
           localStorage.removeItem(SESSION_KEY);
+          localStorage.removeItem(LEGACY_SESSION_KEY);
           this.session = null;
         }
         if (!this.session) requestAnimationFrame(() => $("syncDialog").showModal());
@@ -387,6 +396,7 @@
 
     clearLocalSession(showSetup) {
       localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(LEGACY_SESSION_KEY);
       this.session = null;
       this.room = null;
       this.permissions = null;
