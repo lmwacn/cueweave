@@ -5,7 +5,15 @@
   const LOCAL_VIEW_KEY = "cueweave-local-view-v1";
   const LEGACY_STORAGE_KEY = "liuguang-teleprompter-v1";
   const LEGACY_LOCAL_VIEW_KEY = "liuguang-local-view-v1";
-  const DEFAULT_SCRIPT = `大家好，欢迎来到今天的分享。\n\n这是一款专注、清晰，而且足够灵活的提词器。你可以在左侧随时修改文字，在下方控制滚动速度。\n\n开始之前，先调整字号、行间距和阅读宽度，让画面适合你的阅读习惯。\n\n准备好之后，按下空格键。把视线停留在横线上，文字会自然地经过你的阅读位置。\n\n愿每一次表达，都从容、准确、有力量。`;
+  const DEFAULT_SCRIPT = `大家好，欢迎使用 CueWeave 多端同步提词器。
+
+它可以让电脑、手机和平板加入同一个房间，实时同步文稿、排版、滚动速度和播放进度。
+
+你可以用电脑展示提词画面，用手机调整文字或控制播放，也可以把平板设为纯显示设备。
+
+创建房间后，其他设备扫描二维码或打开邀请网址，就能自动加入，无需再输入房间号。
+
+现在，你可以按下空格键开始滚动，并在不同设备上体验自然、平滑的实时同步。`;
   const defaults = {
     script: DEFAULT_SCRIPT,
     fontSize: 58,
