@@ -200,6 +200,26 @@ input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; } input[type="co
   .app-shell.focus-mode { height: 100vh; height: 100dvh; overflow: hidden; }
   .app-shell.focus-mode .workspace, .app-shell.focus-mode .prompter-area { height: 100%; }
 }
+
+@media (orientation: landscape) and (max-height: 640px) {
+  .app-shell { min-height: 0; height: 100vh; height: 100dvh; grid-template-rows: 52px 52px minmax(0, 1fr); }
+  .topbar { gap: 10px; padding: env(safe-area-inset-top) max(10px, env(safe-area-inset-right)) 0 max(10px, env(safe-area-inset-left)); }
+  .brand-mark { width: 27px; height: 27px; }
+  .topbar-actions { gap: 6px; }
+  .topbar-actions .button { height: 34px; padding: 0 10px; }
+  .dock-scroll { height: 52px; padding-top: 6px; padding-bottom: 6px; }
+  .appearance-dock { height: 52px; padding-top: 6px; padding-bottom: 6px; }
+  .appearance-popover { top: 108px; max-height: calc(100dvh - 116px); overflow-y: auto; }
+  .workspace { min-height: 0; overflow: hidden; }
+  .prompter-area { height: auto; min-height: 0; padding: 6px 10px max(5px, env(safe-area-inset-bottom)); }
+  .stage-wrap { margin: 0 0 6px; }
+  .transport { min-height: 58px; padding: 7px 11px; }
+  .play-button { width: 38px; height: 38px; }
+  .shortcuts { display: none; }
+  .app-shell.focus-mode { grid-template-rows: 0 0 minmax(0, 1fr); }
+  .app-shell.focus-mode .workspace, .app-shell.focus-mode .prompter-area { height: 100%; }
+}
+
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; } }
 
 /* 多端同步 */
