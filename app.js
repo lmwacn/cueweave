@@ -43,7 +43,8 @@
     editorToggle: $("editorToggle"), editorDialog: $("editorDialog"), closeEditorButton: $("closeEditorButton"),
     appearanceButton: $("appearanceButton"), appearancePopover: $("appearancePopover"),
     followRoomMirror: $("followRoomMirror"), displayFollowMirror: $("displayFollowMirror"),
-    displayMirrorHorizontal: $("displayMirrorHorizontal"), displayMirrorVertical: $("displayMirrorVertical")
+    displayMirrorHorizontal: $("displayMirrorHorizontal"), displayMirrorVertical: $("displayMirrorVertical"),
+    exitImmersiveButton: $("exitImmersiveButton"), exitImmersiveLabel: $("exitImmersiveLabel")
   };
 
   const controlIds = ["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "scrollSpeed"];
@@ -59,6 +60,7 @@
   let applyingRemoteState = false;
   let applyingRemotePlayback = false;
   let ownsPlaybackClock = false;
+  let focusEnabledForFullscreen = false;
   let remotePlaybackAnchor = null;
   let preciseScrollTop = null;
   let lastProgressBroadcast = 0;
@@ -715,6 +717,29 @@
     if (elements.editorDialog.open) elements.editorDialog.close();
     state.focusMode = !state.focusMode;
     elements.appShell.classList.toggle("focus-mode", state.focusMode);
+    updateImmersiveControls();
+  }
+
+  function fullscreenElement() {
+    return document.fullscreenElement || document.webkitFullscreenElement || null;
+  }
+
+  function updateImmersiveControls() {
+    const fullscreen = Boolean(fullscreenElement());
+    const active = fullscreen || state.focusMode;
+    elements.exitImmersiveLabel.textContent = fullscreen ? "退出全屏" : "退出专注";
+    elements.exitImmersiveButton.setAttribute("aria-label", fullscreen ? "退出全屏" : "退出专注模式");
+    elements.exitImmersiveButton.setAttribute("aria-hidden", String(!active));
+    elements.exitImmersiveButton.tabIndex = active ? 0 : -1;
+  }
+
+  async function exitImmersiveMode() {
+    const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
+    if (fullscreenElement() && exitFullscreen) {
+      try { await exitFullscreen.call(document); } catch { /* 仍继续退出专注模式 */ }
+    }
+    if (state.focusMode) toggleFocus();
+    focusEnabledForFullscreen = false;
   }
 
   function setAppearancePopover(open) {
@@ -1001,14 +1026,30 @@
     });
     $("fullscreenButton").addEventListener("click", async () => {
       try {
-        if (!document.fullscreenElement) { await document.documentElement.requestFullscreen(); if (!state.focusMode) toggleFocus(); }
-        else await document.exitFullscreen();
-      } catch { toggleFocus(); }
+        if (!fullscreenElement()) {
+          const requestFullscreen = document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen;
+          if (!requestFullscreen) throw new Error("Fullscreen API unavailable");
+          await requestFullscreen.call(document.documentElement);
+          if (!state.focusMode) { focusEnabledForFullscreen = true; toggleFocus(); }
+        } else {
+          await exitImmersiveMode();
+        }
+      } catch {
+        if (!state.focusMode) toggleFocus();
+      }
     });
-    document.addEventListener("fullscreenchange", () => {
-      $("fullscreenButton").innerHTML = document.fullscreenElement ? "<span aria-hidden=\"true\">⛶</span> 退出全屏" : "<span aria-hidden=\"true\">⛶</span> 全屏提词";
+    elements.exitImmersiveButton.addEventListener("click", exitImmersiveMode);
+    const handleFullscreenChange = () => {
+      $("fullscreenButton").innerHTML = fullscreenElement() ? "<span aria-hidden=\"true\">⛶</span> 退出全屏" : "<span aria-hidden=\"true\">⛶</span> 全屏提词";
+      if (!fullscreenElement() && focusEnabledForFullscreen && state.focusMode) {
+        focusEnabledForFullscreen = false;
+        toggleFocus();
+      }
+      updateImmersiveControls();
       updateWakeLock();
-    });
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
     document.addEventListener("keydown", (event) => {
       const interacting = event.target.matches("textarea, input, button, dialog") || (isInlineEditing && elements.promptContent.contains(event.target));
       if (event.code === "Space" && !interacting) { event.preventDefault(); togglePlayback(); }

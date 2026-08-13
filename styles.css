@@ -145,6 +145,9 @@ input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; } input[type="co
 .stage-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; color: #3d4350; pointer-events: none; }.stage-empty span { font-size: 26px; color: var(--accent); opacity: .45; }.stage-empty p { margin: 10px 0 0; font-size: 14px; }.stage-empty.hidden { display: none; }
 .mirror-badge { position: absolute; z-index: 10; top: 14px; right: 14px; padding: 6px 9px; border-radius: 6px; background: rgba(10,12,17,.72); border: 1px solid rgba(255,255,255,.1); color: #a6adba; font-size: 10px; opacity: 0; transform: translateY(-5px); transition: .2s; pointer-events: none; }.mirror-badge.visible { opacity: 1; transform: translateY(0); }
 .display-mirror-controls { display: none; }
+.exit-immersive-button { position: absolute; z-index: 24; top: max(12px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); min-width: 44px; height: 44px; padding: 0 13px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid rgba(255,255,255,.16); border-radius: 10px; color: #e6e9ef; background: rgba(8,10,15,.78); box-shadow: 0 8px 24px rgba(0,0,0,.28); backdrop-filter: blur(12px); cursor: pointer; opacity: 0; pointer-events: none; transform: translateY(-5px); transition: opacity .18s, transform .18s, border-color .18s; }
+.exit-immersive-button span { font-size: 22px; line-height: 1; }.exit-immersive-button b { font-size: 11px; white-space: nowrap; }.exit-immersive-button:hover { border-color: rgba(255,116,82,.5); }
+.app-shell.focus-mode .exit-immersive-button { opacity: .72; pointer-events: auto; transform: none; }.app-shell.focus-mode .exit-immersive-button:hover, .app-shell.focus-mode .exit-immersive-button:focus-visible { opacity: 1; }
 .transport { min-height: 74px; display: grid; grid-template-columns: minmax(180px, .8fr) minmax(310px, 1.3fr) minmax(180px, .8fr); align-items: center; gap: 24px; border: 1px solid var(--line); border-radius: 13px; padding: 12px 18px; background: linear-gradient(180deg, rgba(24,28,38,.97), rgba(17,20,28,.97)); box-shadow: 0 14px 40px rgba(0,0,0,.2); }
 .transport-main { display: flex; align-items: center; gap: 12px; }.play-button { width: 42px; height: 42px; border: 0; border-radius: 50%; display: grid; place-items: center; cursor: pointer; background: linear-gradient(145deg, #ff8a65, #f25e40); box-shadow: 0 6px 20px rgba(255,103,71,.28); transition: .2s; }.play-button:hover { transform: scale(1.04); }.play-icon { width: 0; height: 0; border-top: 7px solid transparent; border-bottom: 7px solid transparent; border-left: 11px solid #200e09; margin-left: 3px; }.play-button.playing .play-icon { width: 11px; height: 13px; border: 0; margin: 0; background: linear-gradient(90deg, #200e09 0 35%, transparent 35% 65%, #200e09 65% 100%); }
 .play-copy { display: flex; flex-direction: column; gap: 3px; }.play-copy b { font-size: 13px; }.play-copy span { color: #686f7e; font-size: 10px; }
@@ -324,10 +327,13 @@ body[data-device-mode="display"] .prompter-stage::-webkit-scrollbar { display: n
 body[data-device-mode="display"] .display-mirror-controls { position: absolute; z-index: 20; top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); display: flex; gap: 6px; padding: 6px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; background: rgba(8,10,15,.76); opacity: .16; transition: opacity .2s; }
 body[data-device-mode="display"] .display-mirror-controls:hover,
 body[data-device-mode="display"] .display-mirror-controls:focus-within { opacity: 1; }
+body[data-device-mode="display"] .app-shell.focus-mode .display-mirror-controls { top: max(64px, calc(env(safe-area-inset-top) + 54px)); }
 .display-mirror-controls button { height: 30px; padding: 0 9px; border: 1px solid rgba(255,255,255,.1); border-radius: 6px; background: #151923; color: #858d9c; font-size: 10px; cursor: pointer; }
 .display-mirror-controls button[aria-pressed="true"] { border-color: rgba(255,116,82,.5); background: rgba(255,116,82,.12); color: var(--accent-2); }
 
 @media (max-width: 720px) {
+  .exit-immersive-button { padding: 0; }
+  .exit-immersive-button b { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
   .topbar .sync-open-button { display: inline-flex; padding: 0 9px; }
   .sync-open-button #connectionLabel { display: none; }
   .settings-dock::after { content: ""; position: absolute; z-index: 2; top: 0; right: 58px; bottom: 0; width: 24px; pointer-events: none; background: linear-gradient(90deg, transparent, rgba(13,16,22,.98)); }
