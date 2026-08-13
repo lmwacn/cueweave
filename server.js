@@ -79,11 +79,11 @@ function cleanDeviceMode(value) {
 }
 
 function cleanRoomMode(value) {
-  return ["open", "restricted", "director"].includes(value) ? value : "restricted";
+  return ["open", "restricted", "director"].includes(value) ? value : "open";
 }
 
 function cleanRole(value) {
-  return ["editor", "operator", "viewer"].includes(value) ? value : "viewer";
+  return ["collaborator", "editor", "operator", "viewer"].includes(value) ? value : "viewer";
 }
 
 function createInviteTokens() {
@@ -103,7 +103,7 @@ function invitedRole(room, inviteToken, deviceMode) {
   const match = Object.entries(room.inviteTokens).find(([, value]) => value === inviteToken)?.[0];
   if (match === "editor" || match === "operator" || match === "viewer") return match;
   if (match === "display") return "viewer";
-  return room.mode === "open" ? (deviceMode === "director" ? "operator" : "editor") : "viewer";
+  return room.mode === "open" ? "collaborator" : "viewer";
 }
 
 function localOrigins(request) {
@@ -192,7 +192,9 @@ function permissions(room, member) {
   if (!member) return none;
   if (member.role === "owner") return { editScript: true, editAppearance: true, controlPlayback: true, controlProgress: true, manageRoom: true };
   if (member.deviceMode === "display") return none;
-  if (room.mode === "open") return { editScript: true, editAppearance: true, controlPlayback: true, controlProgress: true, manageRoom: false };
+  if (room.mode === "open" && member.role === "collaborator") {
+    return { editScript: true, editAppearance: true, controlPlayback: true, controlProgress: true, manageRoom: false };
+  }
   if (member.role === "editor") return { ...none, editScript: true, editAppearance: room.mode !== "director" };
   if (member.role === "operator") return { ...none, controlPlayback: true, controlProgress: true };
   return none;
@@ -493,13 +495,13 @@ function electOwner(room, previousOwnerId) {
   const candidates = [...room.members.values()]
     .filter((member) => member.connected && member.deviceMode !== "display" && member.deviceId !== previousOwnerId)
     .sort((a, b) => {
-      const rank = { editor: 0, operator: 1, viewer: 2 };
+      const rank = { collaborator: 0, editor: 1, operator: 2, viewer: 3 };
       return (rank[a.role] ?? 3) - (rank[b.role] ?? 3) || a.joinedAt - b.joinedAt;
     });
   const next = candidates[0];
   if (!next) return;
   const previous = room.members.get(previousOwnerId);
-  if (previous?.role === "owner") previous.role = "editor";
+  if (previous?.role === "owner") previous.role = room.mode === "open" ? "collaborator" : "editor";
   next.role = "owner";
   room.ownerId = next.deviceId;
   room.revision += 1;
@@ -662,6 +664,11 @@ function handleRoomMode(ws, payload) {
   const context = requirePermission(ws, "manageRoom");
   if (!context) return;
   context.room.mode = cleanRoomMode(payload.mode);
+  if (context.room.mode !== "open") {
+    for (const member of context.room.members.values()) {
+      if (member.role === "collaborator") member.role = "viewer";
+    }
+  }
   context.room.revision += 1;
   context.room.lastActiveAt = Date.now();
   broadcastMembers(context.room);
@@ -718,7 +725,7 @@ function handleTransferOwner(ws, payload) {
   if (!context) return;
   const target = context.room.members.get(String(payload.deviceId));
   if (!target?.connected || target.deviceMode === "display") return send(ws, "error", { code: "INVALID_OWNER", message: "只能将房主移交给在线的非显示设备" });
-  context.member.role = "editor";
+  context.member.role = context.room.mode === "open" ? "collaborator" : "editor";
   target.role = "owner";
   context.room.ownerId = target.deviceId;
   context.room.revision += 1;

@@ -130,6 +130,26 @@ async function join(client, roomId, deviceMode, name = deviceMode, inviteToken =
   return (await client.next("room.joined")).payload;
 }
 
+test("未指定房间模式时默认全员协作", async (context) => {
+  const harness = await createHarness(context);
+  const owner = await harness.client();
+  owner.send("room.create", {
+    name: "房主",
+    deviceMode: "control",
+    state: { script: "默认协作" },
+    playback: { playing: false, progress: 0, speed: 45 }
+  });
+  const room = (await owner.next("room.created")).payload;
+  assert.equal(room.mode, "open");
+
+  const guest = await harness.client();
+  const joined = await join(guest, room.roomId, "control");
+  assert.equal(joined.self.role, "collaborator");
+  assert.deepEqual(joined.permissions, {
+    editScript: true, editAppearance: true, controlPlayback: true, controlProgress: true, manageRoom: false
+  });
+});
+
 test("三种房间模式与四种设备用途执行正确权限矩阵", async (context) => {
   const harness = await createHarness(context);
 
@@ -137,6 +157,7 @@ test("三种房间模式与四种设备用途执行正确权限矩阵", async (c
   const openRoom = await createRoom(openOwner, "open");
   const openControl = await harness.client();
   const openControlJoin = await join(openControl, openRoom.roomId, "control");
+  assert.equal(openControlJoin.self.role, "collaborator");
   assert.deepEqual(openControlJoin.permissions, {
     editScript: true, editAppearance: true, controlPlayback: true, controlProgress: true, manageRoom: false
   });
@@ -147,6 +168,12 @@ test("三种房间模式与四种设备用途执行正确权限矩阵", async (c
   });
   openDisplay.send("playback.update", { action: "play", playing: true, progress: 0, speed: 45 });
   assert.equal((await openDisplay.next("error")).payload.code, "FORBIDDEN");
+
+  openOwner.send("member.update", { deviceId: openControlJoin.self.deviceId, role: "viewer" });
+  const disabledPermissions = (await openControl.next("members.updated", (message) => message.payload.self.role === "viewer")).payload.permissions;
+  assert.deepEqual(disabledPermissions, {
+    editScript: false, editAppearance: false, controlPlayback: false, controlProgress: false, manageRoom: false
+  });
 
   const restrictedOwner = await harness.client();
   const restrictedRoom = await createRoom(restrictedOwner, "restricted");

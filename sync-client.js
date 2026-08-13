@@ -8,7 +8,7 @@
   const storageGet = (key) => { try { return localStorage.getItem(key); } catch { return null; } };
   const storageSet = (key, value) => { try { localStorage.setItem(key, value); } catch {} };
   const storageRemove = (key) => { try { localStorage.removeItem(key); } catch {} };
-  const roleLabels = { owner: "房主", editor: "编辑者", operator: "操作者", viewer: "查看者" };
+  const roleLabels = { owner: "房主", collaborator: "协作者", editor: "编辑者", operator: "操作者", viewer: "查看者" };
   const modeLabels = { control: "控制端", editor: "编辑端", director: "导播端", display: "显示端" };
 
   class SyncClient extends EventTarget {
@@ -422,6 +422,7 @@
       document.body.dataset.roomRole = this.room.self.role;
       const permissionBanner = $("permissionBanner");
       let permissionText = {
+        collaborator: "当前身份：协作者 · 可编辑文稿和画面、控制播放和滚动",
         viewer: "当前身份：查看者 · 仅接收同步内容，需要操作请联系房主授权",
         editor: "当前身份：编辑者 · 可修改文稿和画面",
         operator: "当前身份：导播 · 可控制播放、速度和进度"
@@ -484,7 +485,9 @@
         const controls = document.createElement("div");
         controls.className = "member-controls";
         const role = document.createElement("select");
-        [["editor", "编辑者"], ["operator", "操作者"], ["viewer", "查看者"]].forEach(([value, label]) => role.add(new Option(label, value)));
+        const roleOptions = [["editor", "编辑者"], ["operator", "操作者"], ["viewer", "查看者"]];
+        if (this.room.mode === "open") roleOptions.unshift(["collaborator", "协作者（全部操作）"]);
+        roleOptions.forEach(([value, label]) => role.add(new Option(label, value)));
         role.value = member.role;
         role.title = "用户角色";
         role.addEventListener("change", () => this.send("member.update", { deviceId: member.deviceId, role: role.value }));
