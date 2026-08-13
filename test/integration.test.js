@@ -103,6 +103,16 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   const rejectedStatus = await new Promise((resolve) => rejectedOrigin.once("unexpected-response", (_request, response) => resolve(response.statusCode)));
   assert.equal(rejectedStatus, 403);
 
+  const defaultPortOrigin = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+    origin: "https://cueweave.example",
+    headers: { host: "cueweave.example:443" }
+  });
+  await new Promise((resolve, reject) => {
+    defaultPortOrigin.once("open", resolve);
+    defaultPortOrigin.once("error", reject);
+  });
+  defaultPortOrigin.close();
+
   const owner = new TestClient(`ws://127.0.0.1:${port}/ws`);
   const guest = new TestClient(`ws://127.0.0.1:${port}/ws`);
   context.after(() => { owner.close(); guest.close(); });

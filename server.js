@@ -149,7 +149,11 @@ function originAllowed(request) {
     .map((value) => value.trim())
     .filter(Boolean);
   if (allowed.includes(origin)) return true;
-  try { return new URL(origin).host === String(request.headers.host || ""); }
+  try {
+    const originUrl = new URL(origin);
+    const requestOrigin = new URL(`${originUrl.protocol}//${String(request.headers.host || "")}`);
+    return originUrl.origin === requestOrigin.origin;
+  }
   catch { return false; }
 }
 
