@@ -39,7 +39,7 @@ const publicFiles = new Set(["/index.html", "/app.js", "/sync-client.js", "/styl
 const stateKeys = new Set([
   "script", "fontSize", "lineHeight", "letterSpacing", "contentWidth",
   "backgroundColor", "textColor", "guideColor", "guidePosition", "showGuide",
-  "mirrorHorizontal", "mirrorVertical", "scrollSpeed"
+  "mirrorHorizontal", "mirrorVertical", "reverseScroll", "scrollSpeed"
 ]);
 const numericRanges = {
   fontSize: [24, 120], lineHeight: [1, 2.5], letterSpacing: [-2, 20],
@@ -165,7 +165,7 @@ function cleanState(input = {}, partial = false) {
     if (key === "script") output[key] = String(value).slice(0, 100_000);
     else if (["backgroundColor", "textColor", "guideColor"].includes(key)) {
       if (/^#[0-9a-f]{6}$/i.test(String(value))) output[key] = String(value);
-    } else if (["showGuide", "mirrorHorizontal", "mirrorVertical"].includes(key)) output[key] = Boolean(value);
+    } else if (["showGuide", "mirrorHorizontal", "mirrorVertical", "reverseScroll"].includes(key)) output[key] = Boolean(value);
     else if (Number.isFinite(Number(value))) {
       const [minimum, maximum] = numericRanges[key] || [-Number.MAX_VALUE, Number.MAX_VALUE];
       output[key] = Math.min(maximum, Math.max(minimum, Number(value)));

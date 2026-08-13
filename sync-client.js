@@ -439,7 +439,7 @@
       setDisabled(["importScriptButton"], !this.permissions.editScript || editingLocked);
       $("draftHistorySelect").disabled = !this.permissions.editScript || editingLocked;
       $("restoreDraftButton").disabled = !this.permissions.editScript || editingLocked || !$("draftHistorySelect").value;
-      setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "resetButton"], !this.permissions.editAppearance || editingLocked);
+      setDisabled(["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "reverseScroll", "resetButton"], !this.permissions.editAppearance || editingLocked);
       setDisabled(["playButton", "speedDown", "speedUp", "scrollSpeed"], !this.permissions.controlPlayback);
       setDisabled(["backToTopButton"], !this.permissions.controlProgress);
       this.dispatchEvent(new CustomEvent("permissions", { detail: this.permissions }));
@@ -690,7 +690,7 @@
       this.setEntryUrl();
       document.body.dataset.deviceMode = "control";
       document.body.dataset.roomRole = "";
-      ["editorToggle", "inlineEditButton", "clearButton", "fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "mirrorHorizontal", "mirrorVertical", "resetButton", "playButton", "speedDown", "speedUp", "scrollSpeed", "backToTopButton"].forEach((id) => {
+      ["editorToggle", "inlineEditButton", "clearButton", "fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "backgroundColor", "textColor", "guideColor", "showGuide", "mirrorHorizontal", "mirrorVertical", "reverseScroll", "resetButton", "playButton", "speedDown", "speedUp", "scrollSpeed", "backToTopButton"].forEach((id) => {
         const element = $(id);
         if (element) element.disabled = false;
       });

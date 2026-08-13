@@ -147,6 +147,10 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   const stateUpdate = await owner.next("state.patch");
   assert.equal(stateUpdate.payload.patch.script, "授权后的文稿");
 
+  guest.send("state.patch", { patch: { reverseScroll: true } });
+  const directionUpdate = await owner.next("state.patch");
+  assert.equal(directionUpdate.payload.patch.reverseScroll, true);
+
   owner.send("room.mode", { mode: "director" });
   const directorMode = await guest.next("members.updated", (message) => message.payload.mode === "director");
   assert.equal(directorMode.payload.permissions.editScript, true);
@@ -192,5 +196,6 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   const resumed = await resumedOwner.next("room.joined");
   assert.equal(resumed.payload.self.role, "owner");
   assert.equal(resumed.payload.state.script, "授权后的文稿");
+  assert.equal(resumed.payload.state.reverseScroll, true);
   assert.equal(resumed.payload.playback.playing, false);
 });

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090b10" />
     <title>CueWeave · 流光提词器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260813-1" />
+    <link rel="stylesheet" href="/styles.css?v=20260813-3" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -79,7 +79,7 @@
               <span class="color-dots"><i></i><i></i><i></i></span> 画面设置 <b>⌄</b>
             </button>
             <div class="appearance-popover" id="appearancePopover" aria-hidden="true">
-              <div class="popover-heading"><span>颜色与镜像</span><small>画面显示设置</small></div>
+              <div class="popover-heading"><span>颜色、镜像与滚动</span><small>画面显示设置</small></div>
               <div class="color-grid">
                 <label>背景色 <span class="color-control"><input id="backgroundColor" type="color" /><b id="backgroundColorValue"></b></span></label>
                 <label>文字色 <span class="color-control"><input id="textColor" type="color" /><b id="textColorValue"></b></span></label>
@@ -90,9 +90,10 @@
                 <input id="followRoomMirror" type="checkbox" role="switch" />
                 <i></i>
               </label>
-              <div class="segmented" aria-label="镜像设置">
+              <div class="segmented" aria-label="镜像与滚动设置">
                 <button id="mirrorHorizontal" type="button" aria-pressed="false"><span>↔</span> 左右镜像</button>
                 <button id="mirrorVertical" type="button" aria-pressed="false"><span>↕</span> 上下镜像</button>
+                <button class="scroll-direction-button" id="reverseScroll" type="button" aria-pressed="false" title="文字从上方出现并向下滚动"><span>⇣</span> 滚动翻转</button>
               </div>
             </div>
         </div>
@@ -302,7 +303,7 @@
         </div>
       </dialog>
     </div>
-    <script src="/sync-client.js?v=20260813-1"></script>
-    <script src="/app.js?v=20260813-1"></script>
+    <script src="/sync-client.js?v=20260813-3"></script>
+    <script src="/app.js?v=20260813-3"></script>
   </body>
 </html>

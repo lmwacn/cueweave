@@ -269,6 +269,7 @@ test("输入校验、边界钳制、未知消息和超大消息受到保护", as
       fontSize: 999,
       lineHeight: -5,
       scrollSpeed: 0,
+      reverseScroll: 1,
       backgroundColor: "javascript:bad",
       unexpected: "ignored"
     }
@@ -279,6 +280,7 @@ test("输入校验、边界钳制、未知消息和超大消息受到保护", as
   assert.equal(snapshot.state.fontSize, 120);
   assert.equal(snapshot.state.lineHeight, 1);
   assert.equal(snapshot.state.scrollSpeed, 5);
+  assert.equal(snapshot.state.reverseScroll, true);
   assert.equal(snapshot.state.backgroundColor, undefined);
   assert.equal(snapshot.state.unexpected, undefined);
 

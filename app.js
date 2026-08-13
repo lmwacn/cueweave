@@ -27,6 +27,7 @@
     showGuide: true,
     mirrorHorizontal: false,
     mirrorVertical: false,
+    reverseScroll: false,
     scrollSpeed: 45,
     focusMode: false
   };
@@ -229,6 +230,7 @@
     controlIds.forEach((id) => { $(id).value = state[id]; setRangeProgress($(id)); });
     colorIds.forEach((id) => { $(id).value = state[id]; });
     $("showGuide").checked = state.showGuide;
+    $("reverseScroll").setAttribute("aria-pressed", String(state.reverseScroll));
     document.documentElement.style.setProperty("--prompt-line-height", state.lineHeight);
     document.documentElement.style.setProperty("--prompt-width", `${state.contentWidth}%`);
     document.documentElement.style.setProperty("--stage-background", state.backgroundColor);
@@ -248,10 +250,12 @@
     elements.promptContent.replaceChildren();
     elements.promptContent.classList.add("unified-layout");
     const fragment = document.createDocumentFragment();
-    unifiedLines(state.script).forEach((line, index) => {
+    const lines = unifiedLines(state.script);
+    const renderedLines = state.reverseScroll && !isInlineEditing ? [...lines].reverse() : lines;
+    renderedLines.forEach((line, index) => {
       const row = document.createElement("span");
       row.className = "prompt-line";
-      row.dataset.line = String(index);
+      row.dataset.line = String(state.reverseScroll && !isInlineEditing ? lines.length - index - 1 : index);
       row.textContent = line || "\u00a0";
       fragment.append(row);
     });
@@ -368,6 +372,20 @@
       saveLocalView();
     }
     updateMirror();
+  }
+
+  function toggleScrollDirection() {
+    if (!hasPermission("editAppearance")) return;
+    const anchor = getLineAnchor();
+    state.reverseScroll = !state.reverseScroll;
+    applyState();
+    elements.stage.scrollTop = scrollTopForAnchor(anchor);
+    preciseScrollTop = elements.stage.scrollTop;
+    remotePlaybackAnchor = null;
+    lastFrameTime = 0;
+    saveState(["reverseScroll"]);
+    sync?.flushStatePatch?.();
+    if (isPlaying && ownsPlaybackClock) sync?.sendPlayback("sync", getPlaybackSnapshot());
   }
 
   function readInlineText() {
@@ -509,7 +527,7 @@
         if (completedTarget.playing) {
           remotePlaybackAnchor = {
             position: preciseScrollTop,
-            speed: localScrollSpeed(),
+            speed: scrollVelocity(),
             receivedAt: performance.now(),
             playing: true
           };
@@ -523,19 +541,24 @@
       return;
     }
     const baseSpeed = localScrollSpeed();
-    let effectiveSpeed = baseSpeed;
+    const baseVelocity = scrollVelocity();
+    const direction = state.reverseScroll ? -1 : 1;
+    let effectiveVelocity = baseVelocity;
     if (!ownsPlaybackClock && remotePlaybackAnchor?.playing) {
       const elapsedSeconds = Math.max(0, (performance.now() - remotePlaybackAnchor.receivedAt) / 1000);
       const expectedPosition = remotePlaybackAnchor.position + remotePlaybackAnchor.speed * elapsedSeconds;
       const drift = expectedPosition - elements.stage.scrollTop;
       const correctionLimit = Math.max(baseSpeed * 0.15, baseSpeed * 0.25);
       const correction = Math.abs(drift) < 4 ? 0 : Math.max(-correctionLimit, Math.min(correctionLimit, drift * 0.35));
-      effectiveSpeed = Math.max(baseSpeed * 0.7, baseSpeed + correction);
+      effectiveVelocity = baseVelocity + correction;
+      if (direction * effectiveVelocity < baseSpeed * 0.7) effectiveVelocity = direction * baseSpeed * 0.7;
     }
     if (preciseScrollTop === null) preciseScrollTop = elements.stage.scrollTop;
-    preciseScrollTop += effectiveSpeed * deltaSeconds;
+    preciseScrollTop += effectiveVelocity * deltaSeconds;
     elements.stage.scrollTop = preciseScrollTop;
-    const reachedEnd = elements.stage.scrollTop >= elements.stage.scrollHeight - elements.stage.clientHeight - 1;
+    const reachedEnd = state.reverseScroll
+      ? elements.stage.scrollTop <= 1
+      : elements.stage.scrollTop >= elements.stage.scrollHeight - elements.stage.clientHeight - 1;
     if (reachedEnd && elements.stage.scrollTop === previous) {
       const shouldBroadcastPause = ownsPlaybackClock;
       stopPlayback();
@@ -603,7 +626,9 @@
       return;
     }
     if (!state.script.trim()) return;
-    if (elements.stage.scrollTop >= elements.stage.scrollHeight - elements.stage.clientHeight - 2) elements.stage.scrollTop = 0;
+    if (getProgress() >= 1 - 2 / Math.max(2, elements.stage.scrollHeight - elements.stage.clientHeight)) {
+      elements.stage.scrollTop = startScrollTop();
+    }
     preciseScrollTop = elements.stage.scrollTop;
     isPlaying = true;
     ownsPlaybackClock = true;
@@ -705,7 +730,7 @@
   function backToTop() {
     if (!hasPermission("controlProgress")) return;
     stopPlayback();
-    elements.stage.scrollTo({ top: 0, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    elements.stage.scrollTo({ top: startScrollTop(), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     sync?.sendPlayback("top", { ...getPlaybackSnapshot(), playing: false, progress: 0 });
   }
 
@@ -715,7 +740,16 @@
 
   function getProgress() {
     const maximum = elements.stage.scrollHeight - elements.stage.clientHeight;
-    return maximum > 0 ? Math.min(1, Math.max(0, elements.stage.scrollTop / maximum)) : 0;
+    if (maximum <= 0) return 0;
+    if (state.reverseScroll) {
+      const start = startScrollTop();
+      return start > 0 ? Math.min(1, Math.max(0, (start - elements.stage.scrollTop) / start)) : 0;
+    }
+    return Math.min(1, Math.max(0, elements.stage.scrollTop / maximum));
+  }
+
+  function startScrollTop() {
+    return state.reverseScroll ? scrollTopForAnchor(0) : 0;
   }
 
   function getLayoutMetrics() {
@@ -728,17 +762,23 @@
 
   function getLineAnchor() {
     const { lineHeight, textOrigin, guideY } = getLayoutMetrics();
-    return lineHeight > 0 ? (elements.stage.scrollTop + guideY - textOrigin) / lineHeight : 0;
+    const physicalAnchor = lineHeight > 0 ? (elements.stage.scrollTop + guideY - textOrigin) / lineHeight : 0;
+    return state.reverseScroll ? unifiedLines(state.script).length - 1 - physicalAnchor : physicalAnchor;
   }
 
   function scrollTopForAnchor(anchor) {
     const { lineHeight, textOrigin, guideY } = getLayoutMetrics();
     const maximum = Math.max(0, elements.stage.scrollHeight - elements.stage.clientHeight);
-    return Math.min(maximum, Math.max(0, textOrigin + anchor * lineHeight - guideY));
+    const physicalAnchor = state.reverseScroll ? unifiedLines(state.script).length - 1 - anchor : anchor;
+    return Math.min(maximum, Math.max(0, textOrigin + physicalAnchor * lineHeight - guideY));
   }
 
   function localScrollSpeed() {
     return state.scrollSpeed * elements.stage.clientWidth / REFERENCE_STAGE_WIDTH;
+  }
+
+  function scrollVelocity() {
+    return localScrollSpeed() * (state.reverseScroll ? -1 : 1);
   }
 
   function getPlaybackSnapshot() {
@@ -765,7 +805,9 @@
       const maximum = elements.stage.scrollHeight - elements.stage.clientHeight;
       const target = Number.isFinite(Number(playback.anchor))
         ? scrollTopForAnchor(Number(playback.anchor))
-        : Math.max(0, maximum * Math.min(1, Math.max(0, Number(playback.progress) || 0)));
+        : Math.max(0, state.reverseScroll
+          ? startScrollTop() * (1 - Math.min(1, Math.max(0, Number(playback.progress) || 0)))
+          : maximum * Math.min(1, Math.max(0, Number(playback.progress) || 0)));
       const action = playback.action || "snapshot";
       const drift = target - elements.stage.scrollTop;
       if (action === "scrub") {
@@ -796,7 +838,7 @@
       }
       remotePlaybackAnchor = playback.playing && !ownsPlaybackClock ? {
         position: target,
-        speed: localScrollSpeed(),
+        speed: scrollVelocity(),
         receivedAt: performance.now(),
         playing: true
       } : null;
@@ -936,6 +978,7 @@
     [["mirrorHorizontal", "mirrorHorizontal"], ["mirrorVertical", "mirrorVertical"], ["displayMirrorHorizontal", "mirrorHorizontal"], ["displayMirrorVertical", "mirrorVertical"]].forEach(([id, key]) => {
       $(id).addEventListener("click", () => toggleMirror(key));
     });
+    $("reverseScroll").addEventListener("click", toggleScrollDirection);
     elements.playButton.addEventListener("click", togglePlayback);
     $("speedDown").addEventListener("click", () => changeSpeed(-5));
     $("speedUp").addEventListener("click", () => changeSpeed(5));
@@ -1011,21 +1054,22 @@
 
   bindEvents();
   applyState();
+  if (state.reverseScroll) requestAnimationFrame(() => {
+    elements.stage.scrollTop = startScrollTop();
+    preciseScrollTop = elements.stage.scrollTop;
+  });
   renderDraftHistory();
   loadDraftHistory();
   if (window.ResizeObserver) {
     let previousStageWidth = elements.stage.clientWidth;
-    let previousLineHeight = getLayoutMetrics().lineHeight;
     const resizeObserver = new ResizeObserver(() => {
-      const oldAnchor = previousLineHeight > 0 ? elements.stage.scrollTop / previousLineHeight : 0;
+      const oldAnchor = getLineAnchor();
       applyResponsiveLayout();
-      const nextLineHeight = getLayoutMetrics().lineHeight;
       if (previousStageWidth && elements.stage.clientWidth !== previousStageWidth) {
-        elements.stage.scrollTop = Math.max(0, oldAnchor * nextLineHeight);
+        elements.stage.scrollTop = scrollTopForAnchor(oldAnchor);
         preciseScrollTop = elements.stage.scrollTop;
       }
       previousStageWidth = elements.stage.clientWidth;
-      previousLineHeight = nextLineHeight;
     });
     resizeObserver.observe(elements.stage);
   }
@@ -1037,8 +1081,16 @@
     }, getPlaybackSnapshot);
     sync.addEventListener("remote-state", (event) => {
       applyingRemoteState = true;
+      const previousReverseScroll = state.reverseScroll;
+      const currentAnchor = getLineAnchor();
       state = { ...state, ...event.detail.patch, focusMode: state.focusMode };
       applyState();
+      if (state.reverseScroll !== previousReverseScroll) {
+        elements.stage.scrollTop = scrollTopForAnchor(currentAnchor);
+        preciseScrollTop = elements.stage.scrollTop;
+        remotePlaybackAnchor = null;
+        lastFrameTime = 0;
+      }
       const persistentState = { ...state, focusMode: false };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState));
