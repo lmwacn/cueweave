@@ -963,17 +963,25 @@
       scheduleScriptRender();
       saveState(["script"]);
     });
-    $("mobileMoreButton").addEventListener("click", () => {
+    const closeMobileTransportMenu = () => {
+      const menu = $("mobileTransportMenu");
+      menu.classList.add("hidden");
+      $("mobileMoreButton").setAttribute("aria-expanded", "false");
+    };
+    $("mobileMoreButton").addEventListener("click", (event) => {
+      event.stopPropagation();
       const menu = $("mobileTransportMenu");
       const open = menu.classList.toggle("hidden") === false;
       $("mobileMoreButton").setAttribute("aria-expanded", String(open));
     });
+    $("mobileTransportMenu").addEventListener("click", (event) => event.stopPropagation());
+    document.addEventListener("click", closeMobileTransportMenu);
     $("mobileBackToTopButton").addEventListener("click", () => {
-      $("mobileTransportMenu").classList.add("hidden");
+      closeMobileTransportMenu();
       backToTop();
     });
     $("mobileFocusButton").addEventListener("click", () => {
-      $("mobileTransportMenu").classList.add("hidden");
+      closeMobileTransportMenu();
       toggleFocus();
     });
     controlIds.forEach((id) => {
