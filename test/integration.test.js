@@ -96,6 +96,7 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   assert.match(roomRoute.headers.get("content-security-policy"), /default-src 'self'/);
   assert.equal(roomRoute.headers.get("referrer-policy"), "no-referrer");
   assert.equal((await fetch(`http://127.0.0.1:${port}/room/INVALID`)).status, 404);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/margins.js`)).status, 200);
   assert.equal((await fetch(`http://127.0.0.1:${port}/server.js`)).status, 404);
   assert.equal((await fetch(`http://127.0.0.1:${port}/data/rooms.json`)).status, 404);
 
@@ -150,6 +151,14 @@ test("多设备房间支持权限控制、状态同步和播放同步", async (c
   guest.send("state.patch", { patch: { reverseScroll: true } });
   const directionUpdate = await owner.next("state.patch");
   assert.equal(directionUpdate.payload.patch.reverseScroll, true);
+
+  guest.send("state.patch", { patch: { marginLeft: 20, marginRight: 5, marginsLinked: false } });
+  const marginsUpdate = await owner.next("state.patch");
+  assert.deepEqual(marginsUpdate.payload.patch, { marginLeft: 20, marginRight: 5, marginsLinked: false, contentWidth: 75 });
+  guest.send("state.patch", { patch: { marginRight: 60 } });
+  const clampedMargins = await owner.next("state.patch");
+  assert.equal(clampedMargins.payload.patch.marginRight, 40);
+  assert.equal(clampedMargins.payload.patch.contentWidth, 40);
 
   owner.send("room.mode", { mode: "director" });
   const directorMode = await guest.next("members.updated", (message) => message.payload.mode === "director");

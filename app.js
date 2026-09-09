@@ -1,3 +1,4 @@
+import { normalizeMargins } from "./margins.js";
 (() => {
   "use strict";
 
@@ -20,6 +21,7 @@
     lineHeight: 1.5,
     letterSpacing: 1,
     contentWidth: 76,
+    marginLeft: 12, marginRight: 12, marginsLinked: true,
     backgroundColor: "#07090d",
     textColor: "#f5f1e9",
     guideColor: "#ff6b4a",
@@ -47,7 +49,7 @@
     exitImmersiveButton: $("exitImmersiveButton"), exitImmersiveLabel: $("exitImmersiveLabel")
   };
 
-  const controlIds = ["fontSize", "lineHeight", "letterSpacing", "contentWidth", "guidePosition", "scrollSpeed"];
+  const controlIds = ["fontSize", "lineHeight", "letterSpacing", "marginLeft", "marginRight", "guidePosition", "scrollSpeed"];
   const colorIds = ["backgroundColor", "textColor", "guideColor"];
   let state = loadState();
   let localView = loadLocalView();
@@ -89,7 +91,7 @@
       delete loaded.innerPadding;
       delete loaded.outerMargin;
       delete loaded.editorCollapsed;
-      return loaded;
+      return { ...loaded, ...normalizeMargins(JSON.parse(stored)) };
     } catch {
       return { ...defaults };
     }
@@ -221,14 +223,21 @@
     $("fontSizeValue").value = `${state.fontSize}px`;
     $("lineHeightValue").value = Number(state.lineHeight).toFixed(2).replace(/0$/, "");
     $("letterSpacingValue").value = `${state.letterSpacing}px`;
-    $("contentWidthValue").value = `${state.contentWidth}%`;
+    ["marginLeft", "marginRight"].forEach((id) => { $(`${id}Value`).value = `${state[id]}%`; });
+    $("marginSummary").textContent = `${state.marginLeft}% / ${state.marginRight}%`;
+    $("marginsLinked").checked = state.marginsLinked;
     $("guidePositionValue").value = `${state.guidePosition}%`;
     $("scrollSpeedValue").value = `${state.scrollSpeed}`;
     colorIds.forEach((id) => { $(`${id}Value`).textContent = state[id].toUpperCase(); });
   }
 
   function applyState() {
+    Object.assign(state, normalizeMargins(state));
     elements.scriptInput.value = state.script;
+    ["marginLeft", "marginRight"].forEach((id) => {
+      $(id).max = state.marginsLinked ? 30 : 60 - state[id === "marginLeft" ? "marginRight" : "marginLeft"];
+      setRangeProgress($(id));
+    });
     controlIds.forEach((id) => { $(id).value = state[id]; setRangeProgress($(id)); });
     colorIds.forEach((id) => { $(id).value = state[id]; });
     $("showGuide").checked = state.showGuide;
@@ -239,6 +248,7 @@
     document.documentElement.style.setProperty("--stage-text", state.textColor);
     document.documentElement.style.setProperty("--guide-color", state.guideColor);
     document.documentElement.style.setProperty("--guide-position", `${state.guidePosition}%`);
+    document.documentElement.style.setProperty("--prompt-margin-left", `${state.marginLeft}%`);
     applyResponsiveLayout();
     elements.guideLine.classList.toggle("hidden", !state.showGuide);
     elements.appShell.classList.toggle("focus-mode", state.focusMode);
@@ -665,8 +675,8 @@
         value: `${Number(value).toFixed(2).replace(/0$/, "")} · ${Math.round(state.fontSize * value)} px/行`,
         tip: value < 1.3 ? "行距较密，建议提高到 1.35 以上。" : value > 1.9 ? "行距较松，视线移动距离会更长。" : "当前行距舒展，适合连续阅读。"
       },
-      contentWidth: {
-        title: "阅读宽度",
+      marginLeft: {
+        title: "左边距",
         value: `${value}%`,
         tip: value < 55 ? "内容较窄，适合短句和近距离阅读。" : value > 85 ? "单行可能过长，视线横向移动会增加。" : "宽度适中，视线容易回到下一行。"
       },
@@ -681,6 +691,8 @@
         tip: value < 30 ? "慢速，适合停顿较多的讲解。" : value > 100 ? "速度较快，建议先试读确认节奏。" : "适合正常语速，可边读边微调。"
       }
     };
+    if (id === "marginRight") return { title: "右边距", value: `${value}%`, tip: "文字距离提词区域右边缘的留白。" };
+    if (id === "marginLeft") return { title: "左边距", value: `${value}%`, tip: "文字距离提词区域左边缘的留白。" };
     return copy[id];
   }
 
@@ -742,6 +754,40 @@
     focusEnabledForFullscreen = false;
   }
 
+  function setMarginPopover(open) {
+    $("marginPopover").hidden = !open;
+    $("marginPopover").classList.toggle("open", open);
+    $("marginButton").setAttribute("aria-expanded", String(open));
+  }
+
+  function readingOffset() {
+    const lines = unifiedLines(state.script);
+    const anchor = Math.max(0, Math.min(lines.length - 1, getLineAnchor()));
+    return lines.slice(0, Math.floor(anchor)).reduce((sum, line) => sum + Math.max(1, line.length), 0) + (anchor % 1) * Math.max(1, lines[Math.floor(anchor)].length);
+  }
+
+  function restoreReadingOffset(offset) {
+    const lines = unifiedLines(state.script);
+    let index = 0;
+    while (index < lines.length - 1 && offset >= Math.max(1, lines[index].length)) offset -= Math.max(1, lines[index++].length);
+    const anchor = index + Math.min(1, offset / Math.max(1, lines[index].length));
+    elements.stage.scrollTop = scrollTopForAnchor(anchor);
+    preciseScrollTop = elements.stage.scrollTop;
+    remotePlaybackAnchor = null;
+    lastFrameTime = 0;
+  }
+
+  function changeMargins(patch) {
+    if (!hasPermission("editAppearance")) return;
+    const offset = readingOffset();
+    Object.assign(state, normalizeMargins(state, patch));
+    applyState();
+    restoreReadingOffset(offset);
+    saveState(["marginLeft", "marginRight", "marginsLinked", "contentWidth"]);
+    sync?.flushStatePatch?.();
+    if (isPlaying && ownsPlaybackClock) sync?.sendPlayback("sync", getPlaybackSnapshot());
+  }
+
   function setAppearancePopover(open) {
     elements.appearancePopover.classList.toggle("open", open);
     elements.appearancePopover.setAttribute("aria-hidden", String(!open));
@@ -750,6 +796,7 @@
 
   function closeAppearancePopover() {
     setAppearancePopover(false);
+    setMarginPopover(false);
   }
 
   function backToTop() {
@@ -927,8 +974,22 @@
     });
     elements.appearanceButton.addEventListener("click", (event) => {
       event.stopPropagation();
+      setMarginPopover(false);
       setAppearancePopover(elements.appearanceButton.getAttribute("aria-expanded") !== "true");
     });
+    $("marginButton").addEventListener("click", (event) => {
+      event.stopPropagation();
+      const open = $("marginPopover").hidden;
+      closeAppearancePopover();
+      setMarginPopover(open);
+    });
+    $("marginPopover").addEventListener("click", (event) => event.stopPropagation());
+    $("marginsLinked").addEventListener("change", (event) => {
+      const linked = event.target.checked;
+      const average = Math.round((state.marginLeft + state.marginRight) / 2);
+      changeMargins(linked ? { marginsLinked: true, marginLeft: average, marginRight: average } : { marginsLinked: false });
+    });
+    $("resetMargins").addEventListener("click", () => changeMargins({ marginLeft: 12, marginRight: 12, marginsLinked: true }));
     elements.appearancePopover.addEventListener("click", (event) => event.stopPropagation());
     document.addEventListener("click", closeAppearancePopover);
     elements.inlineEditButton.addEventListener("click", () => {
@@ -986,6 +1047,12 @@
     });
     controlIds.forEach((id) => {
       $(id).addEventListener("input", (event) => {
+        if (id === "marginLeft" || id === "marginRight") {
+          const value = Number(event.target.value);
+          changeMargins(state.marginsLinked ? { marginLeft: value, marginRight: value } : { [id]: value });
+          showVisualAid(id);
+          return;
+        }
         state[id] = Number(event.target.value);
         setRangeProgress(event.target);
         applyState();
@@ -1066,7 +1133,10 @@
       if (!interacting && event.key.toLowerCase() === "r") { event.preventDefault(); backToTop(); }
       if (!interacting && event.key.toLowerCase() === "f") { event.preventDefault(); toggleFocus(); }
       if (!interacting && event.key === "Enter") $("fullscreenButton").click();
-      if (event.key === "Escape") closeAppearancePopover();
+      if (event.key === "Escape") {
+        if (!$("marginPopover").hidden) $("marginButton").focus();
+        closeAppearancePopover();
+      }
       if (event.key === "Escape" && state.focusMode && !document.fullscreenElement) toggleFocus();
     });
     document.addEventListener("visibilitychange", updateWakeLock);
@@ -1131,8 +1201,10 @@
     sync.addEventListener("remote-state", (event) => {
       applyingRemoteState = true;
       const previousReverseScroll = state.reverseScroll;
+      const offset = readingOffset();
+      const marginsChanged = ["marginLeft", "marginRight", "contentWidth"].some((key) => key in event.detail.patch);
       const currentAnchor = getLineAnchor();
-      state = { ...state, ...event.detail.patch, focusMode: state.focusMode };
+      state = { ...state, ...event.detail.patch, ...normalizeMargins(state, event.detail.patch), focusMode: state.focusMode };
       applyState();
       if (state.reverseScroll !== previousReverseScroll) {
         elements.stage.scrollTop = scrollTopForAnchor(currentAnchor);
@@ -1140,6 +1212,7 @@
         remotePlaybackAnchor = null;
         lastFrameTime = 0;
       }
+      if (marginsChanged) restoreReadingOffset(offset);
       const persistentState = { ...state, focusMode: false };
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(persistentState));

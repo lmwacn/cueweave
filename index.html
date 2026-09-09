@@ -53,11 +53,15 @@
               <input id="letterSpacing" type="range" min="-2" max="20" step="0.5" />
               <output for="letterSpacing" id="letterSpacingValue"></output>
             </div>
-            <div class="setting-row width-setting">
-              <label for="contentWidth">宽度</label>
-              <input id="contentWidth" type="range" min="40" max="100" step="1" />
-              <output for="contentWidth" id="contentWidthValue"></output>
-            </div>
+            <button class="button ghost" id="marginButton" type="button" aria-expanded="false" aria-controls="marginPopover">边距 <span id="marginSummary">12% / 12%</span></button>
+            <section class="appearance-popover margin-popover" id="marginPopover" aria-label="左右边距" hidden>
+              <div class="popover-heading"><span>左右边距</span><small>相对提词区域边缘</small></div>
+              <label class="margin-link"><input id="marginsLinked" type="checkbox" /> 左右联动</label>
+              <div class="setting-row"><label for="marginLeft">左边距</label><input id="marginLeft" type="range" min="0" max="60" step="1" /><output id="marginLeftValue" for="marginLeft"></output></div>
+              <div class="setting-row"><label for="marginRight">右边距</label><input id="marginRight" type="range" min="0" max="60" step="1" /><output id="marginRightValue" for="marginRight"></output></div>
+              <p class="margin-tip">左右合计最多 60%，至少保留 40% 阅读宽度。</p>
+              <button class="button ghost" id="resetMargins" type="button">恢复默认</button>
+            </section>
           </div>
 
           <div class="dock-group guide-dock">
@@ -307,6 +311,6 @@
       </dialog>
     </div>
     <script src="/sync-client.js?v=20260813-3"></script>
-    <script src="/app.js?v=20260813-3"></script>
+    <script type="module" src="/app.js?v=20260813-3"></script>
   </body>
 </html>

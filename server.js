@@ -1,3 +1,4 @@
+import { normalizeMargins } from "./margins.js";
 import { createServer } from "node:http";
 import { copyFile, mkdir, open, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, extname, normalize, resolve, sep } from "node:path";
@@ -34,16 +35,16 @@ let droppedBroadcasts = 0;
 const connectionAttempts = new Map();
 const qrAttempts = new Map();
 const qrCache = new Map();
-const publicFiles = new Set(["/index.html", "/app.js", "/sync-client.js", "/styles.css"]);
+const publicFiles = new Set(["/index.html", "/app.js", "/sync-client.js", "/styles.css", "/margins.js"]);
 
 const stateKeys = new Set([
-  "script", "fontSize", "lineHeight", "letterSpacing", "contentWidth",
+  "script", "fontSize", "lineHeight", "letterSpacing", "contentWidth", "marginLeft", "marginRight", "marginsLinked",
   "backgroundColor", "textColor", "guideColor", "guidePosition", "showGuide",
   "mirrorHorizontal", "mirrorVertical", "reverseScroll", "scrollSpeed"
 ]);
 const numericRanges = {
   fontSize: [24, 120], lineHeight: [1, 2.5], letterSpacing: [-2, 20],
-  contentWidth: [40, 100], guidePosition: [15, 85], scrollSpeed: [5, 180]
+  marginLeft: [0, 60], marginRight: [0, 60], contentWidth: [40, 100], guidePosition: [15, 85], scrollSpeed: [5, 180]
 };
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -165,13 +166,14 @@ function cleanState(input = {}, partial = false) {
     if (key === "script") output[key] = String(value).slice(0, 100_000);
     else if (["backgroundColor", "textColor", "guideColor"].includes(key)) {
       if (/^#[0-9a-f]{6}$/i.test(String(value))) output[key] = String(value);
-    } else if (["showGuide", "mirrorHorizontal", "mirrorVertical", "reverseScroll"].includes(key)) output[key] = Boolean(value);
+    } else if (["marginsLinked", "showGuide", "mirrorHorizontal", "mirrorVertical", "reverseScroll"].includes(key)) output[key] = Boolean(value);
     else if (Number.isFinite(Number(value))) {
       const [minimum, maximum] = numericRanges[key] || [-Number.MAX_VALUE, Number.MAX_VALUE];
       output[key] = Math.min(maximum, Math.max(minimum, Number(value)));
     }
   }
   if (!partial && !("script" in output)) output.script = "";
+  if (!partial) Object.assign(output, normalizeMargins(output));
   return output;
 }
 
@@ -627,6 +629,7 @@ function handleStatePatch(ws, payload) {
   }
   const patch = cleanState(payload.patch, true);
   if (!Object.keys(patch).length) return;
+  if (["marginLeft", "marginRight", "marginsLinked", "contentWidth"].some((key) => key in patch)) Object.assign(patch, normalizeMargins(context.room.state, patch));
   context.room.state = { ...context.room.state, ...patch };
   context.room.revision += 1;
   if (includesScript) context.room.scriptRevision += 1;
