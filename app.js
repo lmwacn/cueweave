@@ -287,8 +287,9 @@ import { normalizeMargins } from "./margins.js";
       "--prompt-letter-spacing",
       supportsContainerUnits ? `${state.letterSpacing / 10}cqw` : `${state.letterSpacing * stageWidth / REFERENCE_STAGE_WIDTH}px`
     );
-    document.documentElement.style.setProperty("--prompt-padding-top", `${stageHeight * state.guidePosition / 100}px`);
-    document.documentElement.style.setProperty("--prompt-padding-bottom", `${stageHeight * (100 - state.guidePosition) / 100}px`);
+    const guidePosition = isVerticallyMirrored() ? 100 - state.guidePosition : state.guidePosition;
+    document.documentElement.style.setProperty("--prompt-padding-top", `${stageHeight * guidePosition / 100}px`);
+    document.documentElement.style.setProperty("--prompt-padding-bottom", `${stageHeight * (100 - guidePosition) / 100}px`);
   }
 
   function graphemes(text) {
@@ -339,12 +340,19 @@ import { normalizeMargins } from "./margins.js";
     elements.stageEmpty.classList.toggle("hidden", state.script.trim().length > 0);
   }
 
+  function isVerticallyMirrored() {
+    return !isInlineEditing && (localView.followRoomMirror ? state.mirrorVertical : localView.mirrorVertical);
+  }
+
   function updateMirror() {
     const horizontal = localView.followRoomMirror ? state.mirrorHorizontal : localView.mirrorHorizontal;
     const vertical = localView.followRoomMirror ? state.mirrorVertical : localView.mirrorVertical;
     const x = !isInlineEditing && horizontal ? -1 : 1;
-    const y = !isInlineEditing && vertical ? -1 : 1;
-    elements.promptContent.style.transform = `scale(${x}, ${y})`;
+    const y = isVerticallyMirrored() ? -1 : 1;
+    // 翻转视口才能同时反转文字的可见移动方向，并保留文稿行顺序。
+    elements.stage.style.transform = `scaleY(${y})`;
+    elements.promptContent.style.transform = `scaleX(${x})`;
+    applyResponsiveLayout();
     elements.mirrorBadge.textContent = localView.followRoomMirror ? "房间镜像已开启" : "本机镜像已开启";
     elements.mirrorBadge.classList.toggle("visible", !isInlineEditing && (horizontal || vertical));
     elements.followRoomMirror.checked = localView.followRoomMirror;
@@ -828,7 +836,8 @@ import { normalizeMargins } from "./margins.js";
     const style = getComputedStyle(elements.promptContent);
     const lineHeight = Number.parseFloat(style.lineHeight) || state.fontSize * state.lineHeight;
     const textOrigin = elements.promptContent.offsetTop + (Number.parseFloat(style.paddingTop) || 0);
-    const guideY = elements.stage.clientHeight * state.guidePosition / 100;
+    const guidePosition = isVerticallyMirrored() ? 100 - state.guidePosition : state.guidePosition;
+    const guideY = elements.stage.clientHeight * guidePosition / 100;
     return { lineHeight, textOrigin, guideY };
   }
 
