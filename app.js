@@ -637,6 +637,60 @@ import { normalizeMargins } from "./margins.js";
     }, remaining);
   }
 
+  function bindGamepadScroll() {
+    if (!window.isSecureContext || typeof navigator.getGamepads !== "function") return;
+    let frame = null;
+    let previousTime = null;
+    let remainder = 0;
+
+    function stopScrolling() {
+      if (previousTime === null) return;
+      previousTime = null;
+      remainder = 0;
+      finishManualScroll(0);
+    }
+
+    function sample(timestamp) {
+      frame = null;
+      if (document.hidden || !document.hasFocus()) {
+        stopScrolling();
+        return;
+      }
+      const gamepad = navigator.getGamepads().find((pad) => pad?.connected && pad.mapping === "standard");
+      if (gamepad) schedule();
+      const direction = Number(Boolean(gamepad?.buttons[1]?.pressed)) - Number(Boolean(gamepad?.buttons[0]?.pressed));
+      if (!direction || !hasPermission("controlProgress") || !state.script.trim() || isInlineEditing
+        || document.querySelector("dialog[open]")) {
+        stopScrolling();
+        return;
+      }
+
+      if (previousTime === null || !manualScrollActive) beginManualScroll();
+      const distance = previousTime === null ? 1 : localScrollSpeed() * Math.min((timestamp - previousTime) / 1000, 0.05);
+      previousTime = timestamp;
+      const scrollDirection = isVerticallyMirrored() ? -direction : direction;
+      // 累积亚像素位移，避免高刷新率下每帧位移被取整为零。
+      remainder += scrollDirection * distance;
+      const pixels = Math.trunc(remainder);
+      remainder -= pixels;
+      if (pixels) elements.stage.scrollTop += pixels;
+      finishManualScroll();
+    }
+
+    function schedule() {
+      if (frame === null) frame = requestAnimationFrame(sample);
+    }
+
+    window.addEventListener("gamepadconnected", schedule);
+    window.addEventListener("focus", schedule);
+    window.addEventListener("blur", stopScrolling);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopScrolling();
+      else schedule();
+    });
+    schedule();
+  }
+
   function togglePlayback() {
     if (!hasPermission("controlPlayback")) return;
     if (isInlineEditing) exitInlineEdit();
@@ -1181,6 +1235,7 @@ import { normalizeMargins } from "./margins.js";
   }
 
   bindEvents();
+  bindGamepadScroll();
   applyState();
   if (state.reverseScroll) requestAnimationFrame(() => {
     elements.stage.scrollTop = startScrollTop();
