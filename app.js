@@ -4,6 +4,11 @@ import { normalizeMargins } from "./margins.js";
 
   const STORAGE_KEY = "cueweave-teleprompter-v4";
   const LOCAL_VIEW_KEY = "cueweave-local-view-v4";
+  const GAMEPAD_BINDINGS_KEY = "cueweave-gamepad-bindings-v1";
+  // 标准映射的 A、方向键上、B、方向键下，前两项向上滚动，后两项向下。
+  const DEFAULT_GAMEPAD_BINDINGS = [0, 12, 1, 13];
+  const GAMEPAD_BUTTON_LABELS = ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "返回键", "菜单键",
+    "左摇杆按键", "右摇杆按键", "方向键 ↑", "方向键 ↓", "方向键 ←", "方向键 →", "主键"];
   const DRAFT_DB_NAME = "cueweave-drafts-v4";
   const MAX_DRAFT_HISTORY = 10;
   const DEFAULT_SCRIPT = `大家好，欢迎使用 CueWeave 多端同步提词器。
@@ -637,11 +642,96 @@ import { normalizeMargins } from "./margins.js";
     }, remaining);
   }
 
+  function loadGamepadBindings() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(GAMEPAD_BINDINGS_KEY));
+      if (Array.isArray(saved) && saved.length === DEFAULT_GAMEPAD_BINDINGS.length
+        && saved.every((button) => Number.isSafeInteger(button) && button >= 0)
+        && new Set(saved).size === saved.length) return saved;
+    } catch {}
+    return [...DEFAULT_GAMEPAD_BINDINGS];
+  }
+
   function bindGamepadScroll() {
-    if (!window.isSecureContext || typeof navigator.getGamepads !== "function") return;
+    const dialog = $("gamepadDialog");
+    const slots = [...dialog.querySelectorAll("[data-gamepad-binding]")];
+    const status = $("gamepadStatus");
+    const available = window.isSecureContext && typeof navigator.getGamepads === "function";
+    let bindings = loadGamepadBindings();
+    let captureSlot = null;
+    let pressed = [];
+    let gamepadConnected = false;
+    let waitForRelease = false;
+    let notice = "";
     let frame = null;
     let previousTime = null;
     let remainder = 0;
+
+    function renderStatus() {
+      const message = !window.isSecureContext ? "请通过 HTTPS 或本机 localhost 打开页面。"
+        : !available ? "当前浏览器无法读取手柄。"
+        : captureSlot !== null ? "请按下要绑定的手柄按键。"
+        : notice || (gamepadConnected ? "手柄已连接。" : "连接标准手柄后，按任意键激活。");
+      if (status.textContent !== message) status.textContent = message;
+    }
+
+    function renderBindings() {
+      slots.forEach((slot, index) => {
+        const button = bindings[index];
+        const label = GAMEPAD_BUTTON_LABELS[button] ?? `按钮 ${button + 1}`;
+        const direction = index < 2 ? "向上滚动" : "向下滚动";
+        slot.textContent = label;
+        slot.setAttribute("aria-label", `${direction}，${label}`);
+        slot.setAttribute("aria-pressed", String(index === captureSlot));
+      });
+      renderStatus();
+    }
+
+    function saveBindings() {
+      captureSlot = null;
+      try {
+        localStorage.setItem(GAMEPAD_BINDINGS_KEY, JSON.stringify(bindings));
+        notice = "已保存到当前浏览器。";
+      } catch {
+        notice = "当前会话已应用，浏览器未能保存设置。";
+      }
+      renderBindings();
+    }
+
+    function openSettings() {
+      captureSlot = null;
+      notice = "";
+      renderBindings();
+      dialog.showModal();
+      schedule();
+    }
+
+    $("gamepadSettingsButton").addEventListener("click", openSettings);
+    $("mobileGamepadSettingsButton").addEventListener("click", () => {
+      closeMobileTransportMenu();
+      $("mobileMoreButton").focus();
+      openSettings();
+    });
+    $("closeGamepadButton").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || captureSlot === null) return;
+      event.preventDefault();
+      event.stopPropagation();
+      captureSlot = null;
+      renderBindings();
+    });
+    $("resetGamepadButton").addEventListener("click", () => {
+      bindings = [...DEFAULT_GAMEPAD_BINDINGS];
+      saveBindings();
+    });
+    slots.forEach((slot, index) => {
+      slot.disabled = !available;
+      slot.addEventListener("click", () => {
+        captureSlot = captureSlot === index ? null : index;
+        notice = "";
+        renderBindings();
+      });
+    });
 
     function stopScrolling() {
       if (previousTime === null) return;
@@ -658,7 +748,28 @@ import { normalizeMargins } from "./margins.js";
       }
       const gamepad = navigator.getGamepads().find((pad) => pad?.connected && pad.mapping === "standard");
       if (gamepad) schedule();
-      const direction = Number(Boolean(gamepad?.buttons[1]?.pressed)) - Number(Boolean(gamepad?.buttons[0]?.pressed));
+      const lastPressed = pressed;
+      pressed = gamepad?.buttons.map((button) => Boolean(button?.pressed)) ?? [];
+      gamepadConnected = Boolean(gamepad);
+
+      if (dialog.open) {
+        const button = pressed.findIndex((isPressed, index) => isPressed && !lastPressed[index]);
+        if (captureSlot !== null && button >= 0) {
+          const previousSlot = bindings.indexOf(button);
+          if (previousSlot >= 0) bindings[previousSlot] = bindings[captureSlot];
+          bindings[captureSlot] = button;
+          saveBindings();
+        }
+        waitForRelease = pressed.some(Boolean);
+        renderStatus();
+        stopScrolling();
+        return;
+      }
+      if (waitForRelease && pressed.some(Boolean)) return;
+      waitForRelease = false;
+      const up = pressed[bindings[0]] || pressed[bindings[1]];
+      const down = pressed[bindings[2]] || pressed[bindings[3]];
+      const direction = Number(Boolean(down)) - Number(Boolean(up));
       if (!direction || !hasPermission("controlProgress") || !state.script.trim() || isInlineEditing
         || document.querySelector("dialog[open]")) {
         stopScrolling();
@@ -678,7 +789,7 @@ import { normalizeMargins } from "./margins.js";
     }
 
     function schedule() {
-      if (frame === null) frame = requestAnimationFrame(sample);
+      if (available && frame === null) frame = requestAnimationFrame(sample);
     }
 
     window.addEventListener("gamepadconnected", schedule);
@@ -689,6 +800,11 @@ import { normalizeMargins } from "./margins.js";
       else schedule();
     });
     schedule();
+  }
+
+  function closeMobileTransportMenu() {
+    $("mobileTransportMenu").classList.add("hidden");
+    $("mobileMoreButton").setAttribute("aria-expanded", "false");
   }
 
   function togglePlayback() {
@@ -1087,11 +1203,6 @@ import { normalizeMargins } from "./margins.js";
       scheduleScriptRender();
       saveState(["script"]);
     });
-    const closeMobileTransportMenu = () => {
-      const menu = $("mobileTransportMenu");
-      menu.classList.add("hidden");
-      $("mobileMoreButton").setAttribute("aria-expanded", "false");
-    };
     $("mobileMoreButton").addEventListener("click", (event) => {
       event.stopPropagation();
       const menu = $("mobileTransportMenu");

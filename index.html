@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#090b10" />
     <title>CueWeave · 流光提词器</title>
-    <link rel="stylesheet" href="/styles.css?v=20260813-4" />
+    <link rel="stylesheet" href="/styles.css?v=20261118-1" />
   </head>
   <body>
     <div class="app-shell" id="appShell">
@@ -159,6 +159,7 @@
               <output for="scrollSpeed" id="scrollSpeedValue"></output>
             </div>
             <div class="transport-actions">
+              <button id="gamepadSettingsButton" type="button" aria-haspopup="dialog">手柄设置</button>
               <button id="backToTopButton" type="button" title="回到开头（R）">↥<span>回到开头</span></button>
               <span class="divider"></span>
               <button id="miniFocusButton" type="button" title="隐藏设置（F）">◧<span>隐藏设置</span></button>
@@ -167,11 +168,34 @@
             <div class="mobile-transport-menu hidden" id="mobileTransportMenu" role="menu">
               <button id="mobileBackToTopButton" type="button" role="menuitem">↥ 回到开头</button>
               <button id="mobileFocusButton" type="button" role="menuitem">◧ 专注模式</button>
+              <button id="mobileGamepadSettingsButton" type="button" role="menuitem" aria-haspopup="dialog">手柄设置</button>
             </div>
           </div>
           <p class="shortcuts"><kbd>Space</kbd> 播放 / 暂停　 <kbd>↑</kbd><kbd>↓</kbd> 调速　 <kbd>R</kbd> 回到开头　 <kbd>F</kbd> 专注模式　 <span id="screenAwakeStatus"></span></p>
         </section>
       </main>
+
+      <dialog class="sync-dialog gamepad-dialog" id="gamepadDialog" aria-labelledby="gamepadDialogTitle">
+        <div class="dialog-header">
+          <h1 id="gamepadDialogTitle">手柄设置</h1>
+          <button class="dialog-close" id="closeGamepadButton" type="button" aria-label="关闭手柄设置">×</button>
+        </div>
+        <div class="gamepad-settings">
+          <p>选择一个绑定位置，再按下想使用的手柄按键。已绑定的键会交换位置。</p>
+          <div class="gamepad-binding-row" role="group" aria-labelledby="gamepadUpLabel">
+            <span id="gamepadUpLabel">向上滚动</span>
+            <button class="button ghost" type="button" data-gamepad-binding></button>
+            <button class="button ghost" type="button" data-gamepad-binding></button>
+          </div>
+          <div class="gamepad-binding-row" role="group" aria-labelledby="gamepadDownLabel">
+            <span id="gamepadDownLabel">向下滚动</span>
+            <button class="button ghost" type="button" data-gamepad-binding></button>
+            <button class="button ghost" type="button" data-gamepad-binding></button>
+          </div>
+          <p class="gamepad-status" id="gamepadStatus" role="status"></p>
+          <button class="button ghost" id="resetGamepadButton" type="button">恢复默认</button>
+        </div>
+      </dialog>
 
       <dialog class="editor-dialog" id="editorDialog" aria-labelledby="editorDialogTitle">
         <div class="dialog-header">
@@ -311,6 +335,6 @@
       </dialog>
     </div>
     <script src="/sync-client.js?v=20260813-3"></script>
-    <script type="module" src="/app.js?v=20260813-3"></script>
+    <script type="module" src="/app.js?v=20261118-1"></script>
   </body>
 </html>
